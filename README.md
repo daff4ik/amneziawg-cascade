@@ -5,8 +5,8 @@
 
 | Приложение | Платформы | Ссылка |
 |---|---|---|
-| **AmneziaVPN** *(рекомендуется)* | Windows, macOS, Linux, Android, iOS | https://amnezia.org/ru/downloads |
-| **AmneziaWG** | Windows, macOS, Linux, Android, iOS | https://github.com/amnezia-vpn/amneziawg-go/releases |
+| **AmneziaVPN** *(рекомендуется)* | Windows, macOS, Linux, Android, iOS | https://amnezia.org/ru/downloads https://storage.googleapis.com/amnezia/amnezia.org |
+| **AmneziaWG** | Windows, macOS, Linux, Android, iOS | https://github.com/amnezia-vpn/amneziawg-go/releases  https://storage.googleapis.com/amnezia/amnezia.org|
 
 **Что выбрать:**
 
