@@ -1,0 +1,21 @@
+[Unit]
+Description=AmneziaWG Web Panel
+After=network.target awg-quick@awg1.service
+Wants=awg-quick@awg1.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt
+ExecStart=/opt/amnezia-panel-venv/bin/python3 /opt/amnezia-panel.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=false
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
