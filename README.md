@@ -1,16 +1,16 @@
-\# Каскадный VPN на AmneziaWG 3.1
+ Каскадный VPN на AmneziaWG 3.1
 
 
 
-Готовое решение для развёртывания \*\*каскадного VPN\*\* (двойной туннель) между двумя серверами VPS с обфускацией протокола AmneziaWG 3.1.
+Готовое решение для развёртывания каскадного VPN (двойной туннель) между двумя серверами VPS с обфускацией протокола AmneziaWG 3.1.
 
 
 
-Клиент подключается к \*\*первому серверу\*\* (обычно в стране с блокировками), трафик идёт через \*\*второй сервер\*\* (в свободной стране) и только потом в открытый интернет. Оба плеча туннеля защищены шифрованием и обфускацией, устойчивой к DPI/ТСПУ.
+Клиент подключается к первому серверу (обычно в стране с блокировками), трафик идёт через второй сервер (в свободной стране) и только потом в открытый интернет. Оба плеча туннеля защищены шифрованием и обфускацией, устойчивой к DPI/ТСПУ.
 
 
 
-```
+
 
 ┌────────┐      ┌─────────────────┐      ┌──────────────────┐      ┌──────────┐
 
@@ -22,35 +22,35 @@
 
 &#x20;          :585 └─────────────────┘ :8443└──────────────────┘
 
-```
 
 
 
-\## Что даёт
+
+# Что даёт
 
 
 
-\- ✅ Обход блокировок и DPI
+ ✅ Обход блокировок и DPI
 
-\- ✅ Протокол AmneziaWG 3.1 (расширение WireGuard с обфускацией)
+ ✅ Протокол AmneziaWG 3.1 (расширение WireGuard с обфускацией)
 
-\- ✅ Двойной каскад — трафик выходит из другой страны
+ ✅ Двойной каскад — трафик выходит из другой страны
 
-\- ✅ Уникальные параметры обфускации для каждого клиента
+ ✅ Уникальные параметры обфускации для каждого клиента
 
-\- ✅ Готовые скрипты управления клиентами (добавить/удалить/список)
+ ✅ Готовые скрипты управления клиентами (добавить/удалить/список)
 
-\- ✅ Веб-панель с авторизацией (опционально)
+ ✅ Веб-панель с авторизацией (опционально)
 
-\- ✅ Генерация `vpn://` ссылок и QR-кодов для AmneziaVPN
-
-
-
-\## Требования
+ ✅ Генерация `vpn://` ссылок и QR-кодов для AmneziaVPN
 
 
 
-\*\*Два VPS-сервера\*\* с Ubuntu 22.04 / Debian 12 или новее:
+# Требования
+
+
+
+Два VPS-сервера с Ubuntu 22.04 / Debian 12 или новее:
 
 
 
@@ -70,37 +70,37 @@
 
 
 
-Серверы должны \*\*пинговать друг друга\*\* напрямую (открытые порты UDP, без NAT-проблем).
+Серверы должны пинговать друг друга напрямую (открытые порты UDP, без NAT-проблем).
 
 
 
-\## Архитектура
+# Архитектура
 
 
 
-\- \*\*SERVER-A\*\* — «входная точка». Слушает клиентов на порту \*\*585/udp\*\*.
+ SERVER-A — «входная точка». Слушает клиентов на порту 585/udp.
 
-\- \*\*SERVER-B\*\* — «выходная точка». Слушает туннель от A на порту \*\*8443/udp\*\*.
+ SERVER-B — «выходная точка». Слушает туннель от A на порту 8443/udp.
 
-\- Между ними — \*\*шифрованный туннель awg0\*\* (внутренние IP `10.10.10.1` и `10.10.10.2`).
+ Между ними — шифрованный туннель awg0 (внутренние IP `10.10.10.1` и `10.10.10.2`).
 
-\- Клиенты получают внутренние IP из подсети \*\*10.8.0.0/24\*\*.
+ Клиенты получают внутренние IP из подсети 10.8.0.0/24.
 
-\- Клиентский трафик маршрутизируется: `клиент → SERVER-A → awg0 → SERVER-B → интернет`.
-
-
-
-\## Быстрый старт
+ Клиентский трафик маршрутизируется: `клиент → SERVER-A → awg0 → SERVER-B → интернет`.
 
 
 
-\### Вариант 1. Автоматический (рекомендуется)
+# Быстрый старт
 
 
 
-```bash
+## Вариант 1. Автоматический (рекомендуется)
 
-\# На SERVER-A (входной)
+
+
+bash
+
+ На SERVER-A (входной)
 
 curl -fsSL https://raw.githubusercontent.com/<your-user>/amneziawg-cascade/main/deploy.sh -o deploy.sh
 
@@ -108,17 +108,17 @@ chmod +x deploy.sh
 
 sudo ./deploy.sh
 
-```
+
 
 
 
 Скрипт спросит:
 
-\- IP обоих серверов
+ IP обоих серверов
 
-\- SSH-пароль от SERVER-B
+ SSH-пароль от SERVER-B
 
-\- Имя сервера для отображения в AmneziaVPN
+ Имя сервера для отображения в AmneziaVPN
 
 
 
@@ -126,7 +126,7 @@ sudo ./deploy.sh
 
 
 
-\### Вариант 2. Ручной
+## Вариант 2. Ручной
 
 
 
@@ -134,25 +134,25 @@ sudo ./deploy.sh
 
 
 
-\---
+--
 
 
 
-\## 📋 Пошаговая инструкция (ручной вариант)
+# 📋 Пошаговая инструкция (ручной вариант)
 
 
 
-\### Шаг 1. Подготовка обоих серверов
+## Шаг 1. Подготовка обоих серверов
 
 
 
-Выполняется \*\*на каждом\*\* сервере (A и B).
+Выполняется на каждом сервере (A и B).
 
 
 
-```bash
+bash
 
-\# 1.1. Отключить автообновления (чтобы не мешали apt)
+ 1.1. Отключить автообновления (чтобы не мешали apt)
 
 sudo systemctl stop unattended-upgrades apt-daily.timer apt-daily-upgrade.timer 2>/dev/null
 
@@ -160,7 +160,7 @@ sudo systemctl disable unattended-upgrades apt-daily.timer apt-daily-upgrade.tim
 
 
 
-\# 1.2. Установить зависимости
+ 1.2. Установить зависимости
 
 sudo apt update
 
@@ -170,7 +170,7 @@ sudo apt install -y software-properties-common python3-launchpadlib gnupg2 \\
 
 
 
-\# 1.3. Добавить PPA и установить AmneziaWG
+ 1.3. Добавить PPA и установить AmneziaWG
 
 sudo add-apt-repository -y ppa:amnezia/ppa
 
@@ -180,7 +180,7 @@ sudo apt install -y amneziawg
 
 
 
-\# 1.4. Проверить установку
+ 1.4. Проверить установку
 
 awg --version      # Должно быть "amneziawg-tools v3.1.xxxxxx"
 
@@ -192,29 +192,29 @@ echo "amneziawg" | sudo tee /etc/modules-load.d/amneziawg.conf
 
 
 
-\# 1.5. Включить IP-форвардинг
+ 1.5. Включить IP-форвардинг
 
 echo "net.ipv4.ip\_forward=1" | sudo tee /etc/sysctl.d/99-amneziawg.conf
 
 sudo sysctl --system
 
-```
 
 
 
-\*\*Ожидаемо:\*\* `awg --version` показывает `v3.1.\*`.
+
+Ожидаемо: `awg --version` показывает `v3.1.`.
 
 
 
-\---
+--
 
 
 
-\### Шаг 2. Генерация уникальных параметров обфускации
+## Шаг 2. Генерация уникальных параметров обфускации
 
 
 
-> \*\*Важно:\*\* эти значения \*\*должны быть уникальными\*\* для каждой инсталляции. Не используйте значения из примеров.
+> Важно: эти значения должны быть уникальными для каждой инсталляции. Не используйте значения из примеров.
 
 
 
@@ -222,15 +222,15 @@ sudo sysctl --system
 
 
 
-\*\*На любом из серверов:\*\*
+На любом из серверов:
 
 
 
-```bash
+bash
 
 cat > /tmp/gen-params.sh <<'EOF'
 
-\#!/bin/bash
+!/bin/bash
 
 echo "# === Сгенерированные параметры обфускации ==="
 
@@ -330,51 +330,51 @@ EOF
 
 bash /tmp/gen-params.sh | tee /tmp/params-awg0.txt
 
-```
 
 
 
-\*\*Сохраните вывод.\*\* Эти значения пойдут в конфиги `awg0.conf` на обоих серверах.
+
+Сохраните вывод. Эти значения пойдут в конфиги `awg0.conf` на обоих серверах.
 
 
 
-Отдельно сгенерируйте параметры для \*\*клиентского интерфейса\*\* (`awg1`). Они должны \*\*отличаться\*\* от параметров `awg0` — это повышает незаметность.
+Отдельно сгенерируйте параметры для клиентского интерфейса (`awg1`). Они должны отличаться от параметров `awg0` — это повышает незаметность.
 
 
 
-```bash
+bash
 
-\# Меняем RandomTrailers на on — для клиентов требуется
+ Меняем RandomTrailers на on — для клиентов требуется
 
 sed 's/RandomTrailers = off/RandomTrailers = on/' /tmp/params-awg0.txt > /tmp/params-awg1.txt
 
-\# Генерируем новые значения (повторный запуск скрипта)
+ Генерируем новые значения (повторный запуск скрипта)
 
 bash /tmp/gen-params.sh | sed 's/RandomTrailers = off/RandomTrailers = on/' > /tmp/params-awg1.txt
 
 cat /tmp/params-awg1.txt
 
-```
 
 
 
-\---
+
+--
 
 
 
-\### Шаг 3. Настройка межсерверного туннеля (awg0)
+## Шаг 3. Настройка межсерверного туннеля (awg0)
 
 
 
-\#### 3.1. Генерация ключей (на каждом сервере)
+### 3.1. Генерация ключей (на каждом сервере)
 
 
 
-\*\*На SERVER-A:\*\*
+На SERVER-A:
 
 
 
-```bash
+bash
 
 sudo mkdir -p /etc/amnezia/amneziawg
 
@@ -390,15 +390,15 @@ sudo chmod 644 public.key
 
 echo "SERVER-A public key: $(sudo cat public.key)"
 
-```
 
 
 
-\*\*На SERVER-B:\*\*
+
+На SERVER-B:
 
 
 
-```bash
+bash
 
 sudo mkdir -p /etc/amnezia/amneziawg
 
@@ -414,15 +414,15 @@ sudo chmod 644 public.key
 
 echo "SERVER-B public key: $(sudo cat public.key)"
 
-```
 
 
 
-\*\*Сохраните оба публичных ключа\*\* — они понадобятся друг другу.
+
+Сохраните оба публичных ключа — они понадобятся друг другу.
 
 
 
-\#### 3.2. Конфиг `awg0.conf` на SERVER-B (выходной)
+### 3.2. Конфиг `awg0.conf` на SERVER-B (выходной)
 
 
 
@@ -430,11 +430,11 @@ echo "SERVER-B public key: $(sudo cat public.key)"
 
 
 
-```bash
+bash
 
 sudo nano /etc/amnezia/amneziawg/awg0.conf
 
-```
+
 
 
 
@@ -442,7 +442,7 @@ sudo nano /etc/amnezia/amneziawg/awg0.conf
 
 
 
-```ini
+ini
 
 \[Interface]
 
@@ -520,19 +520,19 @@ PublicKey = <SERVER\_A\_PUBLIC\_KEY>
 
 AllowedIPs = 10.10.10.2/32
 
-```
 
 
 
-\*\*Как узнать имя внешнего интерфейса:\*\*
+
+Как узнать имя внешнего интерфейса:
 
 
 
-```bash
+bash
 
 ip route get 8.8.8.8 | awk '{print $5}' | head -1
 
-```
+
 
 
 
@@ -544,23 +544,23 @@ ip route get 8.8.8.8 | awk '{print $5}' | head -1
 
 
 
-```bash
+bash
 
 sudo chmod 600 /etc/amnezia/amneziawg/awg0.conf
 
-```
 
 
 
-\#### 3.3. Конфиг `awg0.conf` на SERVER-A (входной)
+
+### 3.3. Конфиг `awg0.conf` на SERVER-A (входной)
 
 
 
-```bash
+bash
 
 sudo nano /etc/amnezia/amneziawg/awg0.conf
 
-```
+
 
 
 
@@ -568,7 +568,7 @@ sudo nano /etc/amnezia/amneziawg/awg0.conf
 
 
 
-```ini
+ini
 
 \[Interface]
 
@@ -664,7 +664,7 @@ AllowedIPs = 0.0.0.0/0
 
 PersistentKeepalive = 25
 
-```
+
 
 
 
@@ -672,23 +672,23 @@ PersistentKeepalive = 25
 
 
 
-```bash
+bash
 
 sudo chmod 600 /etc/amnezia/amneziawg/awg0.conf
 
-```
 
 
 
-\#### 3.4. Запуск и проверка
+
+### 3.4. Запуск и проверка
 
 
 
-\*\*На SERVER-B:\*\*
+На SERVER-B:
 
 
 
-```bash
+bash
 
 sudo systemctl enable awg-quick@awg0
 
@@ -696,15 +696,15 @@ sudo systemctl restart awg-quick@awg0
 
 sudo systemctl status awg-quick@awg0 --no-pager | head -10
 
-```
 
 
 
-\*\*На SERVER-A:\*\*
+
+На SERVER-A:
 
 
 
-```bash
+bash
 
 sudo systemctl enable awg-quick@awg0
 
@@ -716,27 +716,27 @@ sleep 3
 
 ping -c 3 10.10.10.1
 
-```
 
 
 
-\*\*Ожидаемо:\*\* обе службы `active (exited)`, ping идёт, `awg show awg0` показывает `latest handshake`.
+
+Ожидаемо: обе службы `active (exited)`, ping идёт, `awg show awg0` показывает `latest handshake`.
 
 
 
-\---
+--
 
 
 
-\### Шаг 4. Клиентский интерфейс awg1 (только на SERVER-A)
+## Шаг 4. Клиентский интерфейс awg1 (только на SERVER-A)
 
 
 
-\#### 4.1. Генерация ключей awg1
+### 4.1. Генерация ключей awg1
 
 
 
-```bash
+bash
 
 cd /etc/amnezia/amneziawg
 
@@ -750,19 +750,19 @@ sudo chmod 644 awg1\_public.key
 
 echo "awg1 public key: $(sudo cat awg1\_public.key)"
 
-```
 
 
 
-\#### 4.2. Конфиг `awg1.conf`
+
+### 4.2. Конфиг `awg1.conf`
 
 
 
-```bash
+bash
 
 sudo nano /etc/amnezia/amneziawg/awg1.conf
 
-```
+
 
 
 
@@ -770,7 +770,7 @@ sudo nano /etc/amnezia/amneziawg/awg1.conf
 
 
 
-```ini
+ini
 
 \[Interface]
 
@@ -822,7 +822,7 @@ RandomTrailers = on
 
 DisableCookies = on
 
-```
+
 
 
 
@@ -830,7 +830,7 @@ DisableCookies = on
 
 
 
-```bash
+bash
 
 sudo chmod 600 /etc/amnezia/amneziawg/awg1.conf
 
@@ -840,37 +840,37 @@ sudo systemctl restart awg-quick@awg1
 
 sudo systemctl status awg-quick@awg1 --no-pager | head -10
 
-```
 
 
 
-\*\*Проверка маршрутизации:\*\*
+
+Проверка маршрутизации:
 
 
 
-```bash
+bash
 
 ip rule show     # должно быть: from 10.8.0.0/24 lookup 100
 
 ip route show table 100    # должно быть: default dev awg0
 
-```
 
 
 
-\---
+
+--
 
 
 
-\### Шаг 5. Первый клиент
+## Шаг 5. Первый клиент
 
 
 
-\#### 5.1. Генерация ключей клиента
+### 5.1. Генерация ключей клиента
 
 
 
-```bash
+bash
 
 cd /etc/amnezia/amneziawg
 
@@ -882,19 +882,19 @@ echo "Client private: $(sudo cat client1\_private.key)"
 
 echo "Client public: $(sudo cat client1\_public.key)"
 
-```
 
 
 
-\#### 5.2. Добавить клиента в awg1.conf
+
+### 5.2. Добавить клиента в awg1.conf
 
 
 
-```bash
+bash
 
 sudo nano /etc/amnezia/amneziawg/awg1.conf
 
-```
+
 
 
 
@@ -902,17 +902,17 @@ sudo nano /etc/amnezia/amneziawg/awg1.conf
 
 
 
-```ini
+ini
 
 \[Peer]
 
-\# Client: admin
+ Client: admin
 
 PublicKey = <CLIENT1\_PUBLIC\_KEY>
 
 AllowedIPs = 10.8.0.2/32
 
-```
+
 
 
 
@@ -920,17 +920,17 @@ AllowedIPs = 10.8.0.2/32
 
 
 
-```bash
+bash
 
 sudo systemctl restart awg-quick@awg1
 
 sudo awg show awg1
 
-```
 
 
 
-\#### 5.3. Клиентский `.conf` файл
+
+### 5.3. Клиентский `.conf` файл
 
 
 
@@ -938,7 +938,7 @@ sudo awg show awg1
 
 
 
-```ini
+ini
 
 \[Interface]
 
@@ -1004,27 +1004,27 @@ AllowedIPs = 0.0.0.0/0
 
 PersistentKeepalive = 25
 
-```
 
 
 
-Значение `I1` — \*\*уникальное для каждого клиента\*\*. Генерируется командой (см. раздел ниже).
+
+Значение `I1` — уникальное для каждого клиента. Генерируется командой (см. раздел ниже).
 
 
 
-\---
+--
 
 
 
-\## 🛠️ Генерация I1 для клиента
+# 🛠️ Генерация I1 для клиента
 
 
 
-`I1` — это «маскировочный» пакет, выглядит для DPI как DNS-ответ. Для каждого клиента должен быть \*\*свой\*\*.
+`I1` — это «маскировочный» пакет, выглядит для DPI как DNS-ответ. Для каждого клиента должен быть свой.
 
 
 
-```bash
+bash
 
 python3 - <<'PYEOF'
 
@@ -1054,15 +1054,15 @@ print(f"I1 = <r 2><b 0x{h}>")
 
 PYEOF
 
-```
 
 
 
-\---
+
+--
 
 
 
-\## 📦 Управление клиентами (скрипты)
+# 📦 Управление клиентами (скрипты)
 
 
 
@@ -1070,45 +1070,45 @@ PYEOF
 
 
 
-\### `amnezia-add-client.sh` — добавить клиента
+## `amnezia-add-client.sh` — добавить клиента
 
 
 
-```bash
+bash
 
 sudo ./scripts/amnezia-add-client.sh <имя>
 
-```
+
 
 
 
 Что делает:
 
-\- Находит свободный IP в `10.8.0.0/24`
+ Находит свободный IP в `10.8.0.0/24`
 
-\- Генерирует пару ключей + уникальный `I1`
+ Генерирует пару ключей + уникальный `I1`
 
-\- Создаёт `/root/clients/<имя>.conf`
+ Создаёт `/root/clients/<имя>.conf`
 
-\- Добавляет `\[Peer]` в `awg1.conf`
+ Добавляет `\[Peer]` в `awg1.conf`
 
-\- Перезапускает `awg-quick@awg1`
+ Перезапускает `awg-quick@awg1`
 
-\- Опционально: конвертирует в `vpn://` ссылку для AmneziaVPN
+ Опционально: конвертирует в `vpn://` ссылку для AmneziaVPN
 
-\- Показывает QR-код
-
-
-
-\### `amnezia-remove-client.sh` — удалить клиента
+ Показывает QR-код
 
 
 
-```bash
+## `amnezia-remove-client.sh` — удалить клиента
+
+
+
+bash
 
 sudo ./scripts/amnezia-remove-client.sh <имя>
 
-```
+
 
 
 
@@ -1116,15 +1116,15 @@ sudo ./scripts/amnezia-remove-client.sh <имя>
 
 
 
-\### `amnezia-list-clients.sh` — список клиентов
+## `amnezia-list-clients.sh` — список клиентов
 
 
 
-```bash
+bash
 
 sudo ./scripts/amnezia-list-clients.sh
 
-```
+
 
 
 
@@ -1132,25 +1132,25 @@ sudo ./scripts/amnezia-list-clients.sh
 
 
 
-\*\*Как читать статистику:\*\*
+Как читать статистику:
 
-\- \*\*RX (от клиента)\*\* — клиент отправил через VPN (его upload)
+ RX (от клиента) — клиент отправил через VPN (его upload)
 
-\- \*\*TX (клиенту)\*\* — сервер отправил клиенту (его download)
+ TX (клиенту) — сервер отправил клиенту (его download)
 
-\- \*\*ONLINE\*\* — handshake < 3 минут назад
+ ONLINE — handshake < 3 минут назад
 
-\- \*\*OFFLINE\*\* — handshake старше 3 минут
+ OFFLINE — handshake старше 3 минут
 
-\- \*\*NEVER\*\* — клиент ни разу не подключался
-
-
-
-\---
+ NEVER — клиент ни разу не подключался
 
 
 
-\## 🌐 Веб-панель (опционально)
+--
+
+
+
+# 🌐 Веб-панель (опционально)
 
 
 
@@ -1158,9 +1158,9 @@ sudo ./scripts/amnezia-list-clients.sh
 
 
 
-```bash
+bash
 
-\# Установить зависимости Python
+ Установить зависимости Python
 
 sudo apt install -y python3-venv
 
@@ -1170,7 +1170,7 @@ sudo /opt/amnezia-panel-venv/bin/pip install fastapi 'uvicorn\[standard]' python
 
 
 
-\# Создать файл конфигурации с логином/паролем
+ Создать файл конфигурации с логином/паролем
 
 sudo tee /etc/amnezia-panel.conf > /dev/null <<EOF
 
@@ -1184,13 +1184,13 @@ sudo chmod 600 /etc/amnezia-panel.conf
 
 
 
-\# Показать сгенерированный пароль
+ Показать сгенерированный пароль
 
 sudo cat /etc/amnezia-panel.conf
 
 
 
-\# Скопировать amnezia-panel.py и service из репозитория
+ Скопировать amnezia-panel.py и service из репозитория
 
 sudo cp web-panel/amnezia-panel.py /opt/
 
@@ -1198,7 +1198,7 @@ sudo cp web-panel/amnezia-panel.service /etc/systemd/system/
 
 
 
-\# ВНИМАНИЕ: в amnezia-panel.py замените SERVER\_LABEL на своё имя
+ ВНИМАНИЕ: в amnezia-panel.py замените SERVER\_LABEL на своё имя
 
 
 
@@ -1206,7 +1206,7 @@ sudo systemctl daemon-reload
 
 sudo systemctl enable --now amnezia-panel
 
-```
+
 
 
 
@@ -1214,65 +1214,65 @@ sudo systemctl enable --now amnezia-panel
 
 
 
-> \*\*Безопасность:\*\* перед публичным использованием настройте HTTPS (см. `web-panel/README.md`).
+> Безопасность: перед публичным использованием настройте HTTPS (см. `web-panel/README.md`).
 
 
 
-\*\*Возможности панели:\*\*
+Возможности панели:
 
-\- 🔐 Basic Auth логин/пароль
+ 🔐 Basic Auth логин/пароль
 
-\- 👥 Список клиентов с трафиком и статусами (обновление каждые 5 сек)
+ 👥 Список клиентов с трафиком и статусами (обновление каждые 5 сек)
 
-\- ➕ Создание / 🗑️ удаление клиентов
+ ➕ Создание / 🗑️ удаление клиентов
 
-\- 📥 Скачивание `.conf` и `vpn://`
+ 📥 Скачивание `.conf` и `vpn://`
 
-\- 🔲 QR-код `vpn://` прямо в браузере
+ 🔲 QR-код `vpn://` прямо в браузере
 
-\- 🔄 Перезапуск туннелей одной кнопкой
+ 🔄 Перезапуск туннелей одной кнопкой
 
-\- 🌙 Тёмная тема
+ 🌙 Тёмная тема
 
-\- 📊 Суммарный RX/TX в шапке
-
-
-
-\---
+ 📊 Суммарный RX/TX в шапке
 
 
 
-\## 🐛 Диагностика
+--
 
 
 
-\### Туннель awg0 не поднимается
+# 🐛 Диагностика
 
 
 
-```bash
+## Туннель awg0 не поднимается
+
+
+
+bash
 
 sudo journalctl -xeu awg-quick@awg0 -n 50 --no-pager
 
 sudo awg show awg0
 
-```
+
 
 
 
 Частые причины:
 
-\- Не совпадают `HeaderProtectionKey`, `S1-S4`, `H1-H4` на двух серверах
+ Не совпадают `HeaderProtectionKey`, `S1-S4`, `H1-H4` на двух серверах
 
-\- Не совпадают `RandomTrailers` (должны быть одинаковыми в одном туннеле)
+ Не совпадают `RandomTrailers` (должны быть одинаковыми в одном туннеле)
 
-\- Порт 8443/udp заблокирован у провайдера
+ Порт 8443/udp заблокирован у провайдера
 
-\- Неправильно указан `Endpoint` (IP или порт)
+ Неправильно указан `Endpoint` (IP или порт)
 
 
 
-\### Клиент подключается, но нет интернета
+## Клиент подключается, но нет интернета
 
 
 
@@ -1280,13 +1280,13 @@ sudo awg show awg0
 
 
 
-```bash
+bash
 
 ip rule show               # должно быть from 10.8.0.0/24 lookup 100
 
 ip route show table 100    # должно быть default dev awg0
 
-```
+
 
 
 
@@ -1294,27 +1294,27 @@ ip route show table 100    # должно быть default dev awg0
 
 
 
-```bash
+bash
 
 sudo iptables -t nat -L POSTROUTING -n -v    # MASQUERADE должен быть
 
-```
 
 
 
-\### Медленная скорость / upload 0
+
+## Медленная скорость / upload 0
 
 
 
 Проблема с MTU/MSS. Решение:
 
-\- На обоих серверах `MTU = 1180` (для awg0) и `MTU = 1100` (для awg1)
+ На обоих серверах `MTU = 1180` (для awg0) и `MTU = 1100` (для awg1)
 
-\- MSS-клэмп `--set-mss 1000` на обоих серверах (правила в PostUp/PostDown)
+ MSS-клэмп `--set-mss 1000` на обоих серверах (правила в PostUp/PostDown)
 
-\- Клиентский `MTU = 1280`
+ Клиентский `MTU = 1280`
 
-\- Убедитесь, что `RandomTrailers` на клиенте и `awg1` \*\*совпадают\*\*
+ Убедитесь, что `RandomTrailers` на клиенте и `awg1` совпадают
 
 
 
@@ -1322,15 +1322,15 @@ sudo iptables -t nat -L POSTROUTING -n -v    # MASQUERADE должен быть
 
 
 
-\### Панель не запускается
+## Панель не запускается
 
 
 
-```bash
+bash
 
 sudo journalctl -u amnezia-panel -n 30 --no-pager
 
-```
+
 
 
 
@@ -1338,61 +1338,61 @@ sudo journalctl -u amnezia-panel -n 30 --no-pager
 
 
 
-```bash
+bash
 
 file -i /opt/amnezia-panel.py   # должно быть charset=utf-8
 
-```
 
 
 
-> \*\*Важно:\*\* файлы для Python (`.py`) сохраняйте \*\*только в UTF-8\*\*. Если редактируете через Windows-редакторы (MobaXterm, Notepad), выберите UTF-8 в настройках кодировки.
+
+> Важно: файлы для Python (`.py`) сохраняйте только в UTF-8. Если редактируете через Windows-редакторы (MobaXterm, Notepad), выберите UTF-8 в настройках кодировки.
 
 
 
-\---
+--
 
 
 
-\## ❓ FAQ
+# ❓ FAQ
 
 
 
-\*\*Можно ли использовать один сервер?\*\*
+Можно ли использовать один сервер?
 
 Да, но тогда нет смысла в каскаде — используйте чистый AmneziaWG. Каскад нужен для «разрыва» между странами.
 
 
 
-\*\*Можно ли добавить третий сервер?\*\*
+Можно ли добавить третий сервер?
 
 Технически да — добавьте `awg2` на SERVER-B и свяжите его с сервером C по аналогии с awg0. Понадобится обновить маршрутизацию.
 
 
 
-\*\*Сколько клиентов можно создать?\*\*
+Сколько клиентов можно создать?
 
 До 253 (подсеть `/24`), но реально зависит от нагрузки на сервер. Каждый активный клиент потребляет CPU на шифрование.
 
 
 
-\*\*Что если IP сервера статический, а клиента — динамический?\*\*
+Что если IP сервера статический, а клиента — динамический?
 
 Ничего страшного — `PersistentKeepalive = 25` поддерживает соединение через NAT.
 
 
 
-\*\*Как забэкапить всё?\*\*
+Как забэкапить всё?
 
 Конфиги лежат в `/etc/amnezia/amneziawg/`. Клиенты — в `/root/clients/`. Достаточно скопировать эти две папки.
 
 
 
-\---
+--
 
 
 
-\## 📜 Лицензия
+# 📜 Лицензия
 
 
 
@@ -1400,29 +1400,29 @@ MIT. Используйте свободно.
 
 
 
-\## 🤝 Вклад
+# 🤝 Вклад
 
 
 
 PR и issues приветствуются. Особенно интересны:
 
-\- Автоматизация деплоя (Ansible, Terraform)
+ Автоматизация деплоя (Ansible, Terraform)
 
-\- Мониторинг (Prometheus exporter, Grafana dashboard)
+ Мониторинг (Prometheus exporter, Grafana dashboard)
 
-\- Telegram-бот для уведомлений
+ Telegram-бот для уведомлений
 
-\- Поддержка Alpine Linux
-
-
-
-\## 🙏 Благодарности
+ Поддержка Alpine Linux
 
 
 
-\- \[Amnezia VPN](https://amnezia.org) — за протокол и инструменты
+# 🙏 Благодарности
 
-\- \[WireGuard](https://www.wireguard.com) — за основу
 
-\- Сообществу за идеи и отчёты об ошибках
+
+ \[Amnezia VPN](https://amnezia.org) — за протокол и инструменты
+
+ \[WireGuard](https://www.wireguard.com) — за основу
+
+ Сообществу за идеи и отчёты об ошибках
 
