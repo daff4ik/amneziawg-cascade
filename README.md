@@ -50,9 +50,10 @@
 
 ```bash
 # На SERVER-A (входной)
+sudo apt update
+sudo apt install -y curl
 curl -fsSL https://raw.githubusercontent.com/davideprikyan/amneziawg-cascade/main/deploy.sh -o deploy.sh
-chmod +x deploy.sh
-sudo ./deploy.sh
+sudo bash deploy.sh
 ```
 
 Скрипт спросит:
