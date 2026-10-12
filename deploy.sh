@@ -450,6 +450,36 @@ fi
 if [[ "$INSTALL_PANEL" =~ ^[yYдД] ]]; then
     say "Установка веб-панели"
 
+    echo ""
+    echo "Выберите способ создания учётных данных для панели:"
+    echo "  1) Сгенерировать автоматически (рекомендуется)"
+    echo "  2) Указать свой логин и пароль"
+    echo ""
+    read -p "Ваш выбор [1]: " AUTH_CHOICE
+    AUTH_CHOICE="${AUTH_CHOICE:-1}"
+
+    case "$AUTH_CHOICE" in
+        2)
+            read -p "Логин: " PANEL_USER
+            [[ -z "$PANEL_USER" ]] && { err "Логин не может быть пустым"; exit 1; }
+
+            while :; do
+                read -r -s -p "Пароль (мин. 8 символов): " PANEL_PASS; echo
+                [[ ${#PANEL_PASS} -lt 8 ]] && { warn "Пароль слишком короткий, попробуйте снова"; continue; }
+
+                read -r -s -p "Повторите пароль: " PANEL_PASS2; echo
+                [[ "$PANEL_PASS" != "$PANEL_PASS2" ]] && { warn "Пароли не совпадают, попробуйте снова"; continue; }
+                break
+            done
+            ok "Учётные данные приняты"
+            ;;
+        *)
+            PANEL_USER="admin"
+            PANEL_PASS=$(openssl rand -base64 24 | tr -d '/+=' | head -c 24)
+            ok "Учётные данные сгенерированы автоматически"
+            ;;
+    esac
+
     echo "  ↓ Скачивание amnezia-panel.py"
     curl -fsSL "$REPO_URL/web-panel/amnezia-panel.py" -o /tmp/amnezia-panel.py || { err "Не удалось скачать amnezia-panel.py"; exit 1; }
     echo "  ↓ Скачивание amnezia-panel.service"
@@ -465,9 +495,7 @@ if [[ "$INSTALL_PANEL" =~ ^[yYдД] ]]; then
     sed "s|__SERVER_LABEL__|$SERVER_NAME|g" /tmp/amnezia-panel.py > /opt/amnezia-panel.py
     chmod 700 /opt/amnezia-panel.py
 
-    # Логин/пароль
-    PANEL_USER="admin"
-    PANEL_PASS=$(openssl rand -base64 24 | tr -d '/+=' | head -c 24)
+    # Логин/пароль — берём из выбора выше
     cat > /etc/amnezia-panel.conf <<EOF
 username=$PANEL_USER
 password=$PANEL_PASS
@@ -499,10 +527,14 @@ EOF
         echo "=============================================="
         echo "  URL:      https://$RU_IP:8000"
         echo "  Логин:    $PANEL_USER"
-        echo "  Пароль:   $PANEL_PASS"
-        echo ""
-        echo "  СОХРАНИТЕ ЭТИ ДАННЫЕ! Пароль больше не будет показан."
-        echo "  (также записан в /etc/amnezia-panel.conf)"
+        if [[ "$AUTH_CHOICE" == "2" ]]; then
+            echo "  Пароль:   (задан вами при установке)"
+        else
+            echo "  Пароль:   $PANEL_PASS"
+            echo ""
+            echo "  СОХРАНИТЕ ПАРОЛЬ! Больше он не будет показан."
+        fi
+        echo "  (учётные данные записаны в /etc/amnezia-panel.conf)"
         echo "=============================================="
     else
         err "Веб-панель не запустилась"
