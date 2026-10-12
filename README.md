@@ -50,7 +50,7 @@
 
 ```bash
 # На SERVER-A (входной)
-curl -fsSL https://raw.githubusercontent.com/<your-user>/amneziawg-cascade/main/deploy.sh -o deploy.sh
+curl -fsSL https://raw.githubusercontent.com/davideprikyan/amneziawg-cascade/main/deploy.sh -o deploy.sh
 chmod +x deploy.sh
 sudo ./deploy.sh
 ```
