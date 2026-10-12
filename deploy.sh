@@ -11,7 +11,7 @@ set -euo pipefail
 # =====================================================================
 #  НАСТРОЙКА: замените на URL вашего репозитория
 # =====================================================================
-REPO_URL="https://raw.githubusercontent.com/davideprikyan/amneziawg-cascade/main"
+REPO_URL="https://raw.githubusercontent.com/CHANGE_ME_USER/CHANGE_ME_REPO/main"
 # Пример: https://raw.githubusercontent.com/username/amneziawg-cascade/main
 
 # ==================== Константы ====================
