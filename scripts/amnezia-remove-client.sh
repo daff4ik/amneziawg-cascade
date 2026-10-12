@@ -1,7 +1,7 @@
 #!/bin/bash
 # =====================================================================
 #  amnezia-remove-client.sh
-#  Удаляет клиента AmneziaWG: peer из awg1.conf, .conf и .vpn.txt.
+#  Удаляет конфиг клиента AmneziaWG: peer из awg1.conf, .conf и .vpn.txt.
 # =====================================================================
 set -euo pipefail
 

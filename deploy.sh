@@ -11,7 +11,7 @@ set -euo pipefail
 # =====================================================================
 #  НАСТРОЙКА: замените на URL вашего репозитория
 # =====================================================================
-REPO_URL="https://raw.githubusercontent.com/CHANGE_ME_USER/CHANGE_ME_REPO/main"
+REPO_URL="https://raw.githubusercontent.com/davideprikyan/amneziawg-cascade/main"
 # Пример: https://raw.githubusercontent.com/username/amneziawg-cascade/main
 
 # ==================== Константы ====================
@@ -32,7 +32,7 @@ CLIENT_DNS="1.1.1.1, 1.0.0.1"
 say() { echo -e "\n\033[1;36m=== $* ===\033[0m"; }
 ok()  { echo -e "\033[1;32m[OK]\033[0m $*"; }
 warn(){ echo -e "\033[1;33m[WARN]\033[0m $*"; }
-err() { echo -e "\033[1;31m[ERR]\033[0m $*" >&2; }
+err() { echo -e "\033[1;31m[ERR]\033[0m $*" >&  2; }
 
 # =====================================================================
 #  Проверка REPO_URL
@@ -124,7 +124,7 @@ run_de "echo SSH_OK" | grep -q SSH_OK || { err "SSH до $DE_IP не работ�
 ok "SSH работает"
 
 # =====================================================================
-#  Установка AmneziaWG на оба сервера
+#  Установка AmneziaWG на оба сервера !
 # =====================================================================
 install_awg() {
     local target="$1"
