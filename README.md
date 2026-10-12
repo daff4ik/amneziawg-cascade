@@ -73,10 +73,7 @@
 
 ```bash
 # На SERVER-A (входной)
-sudo apt update
-sudo apt install -y curl
-curl -fsSL https://raw.githubusercontent.com/davideprikyan/amneziawg-cascade/main/deploy.sh -o deploy.sh
-sudo bash deploy.sh
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/davideprikyan/amneziawg-cascade/main/deploy.sh -o /tmp/deploy.sh >/dev/null; cat /tmp/deploy.sh)"
 ```
 
 Скрипт спросит:
