@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-AmneziaWG Web Panel
-Функции: клиенты, трафик, QR, рестарт туннеля, тёмная тема, суммарный трафик.
-Плейсхолдер __SERVER_LABEL__ подставляет deploy.sh (или задайте вручную).
+AmneziaWG Web Panel — версия с формой логина вместо Basic Auth.
 """
 import os
 import re
 import io
+import hmac
+import hashlib
 import secrets
 import subprocess
-from fastapi import FastAPI, HTTPException, Depends, Form
+from fastapi import FastAPI, HTTPException, Depends, Form, Request
 from fastapi.responses import (
     HTMLResponse, FileResponse, RedirectResponse, Response, JSONResponse,
 )
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
 import qrcode
 import qrcode.image.svg
 import uvicorn
@@ -27,6 +26,9 @@ CLIENTS_DIR   = "/root/clients"
 ADD_SCRIPT    = "/usr/local/bin/amnezia-add-client.sh"
 REMOVE_SCRIPT = "/usr/local/bin/amnezia-remove-client.sh"
 SERVER_LABEL  = "__SERVER_LABEL__"
+
+SESSION_COOKIE = "amnezia_session"
+SESSION_DAYS   = 7
 
 # ==================== Аутентификация ====================
 def load_credentials():
@@ -46,22 +48,33 @@ def load_credentials():
         raise RuntimeError("username and password required")
     return cfg["username"], cfg["password"]
 
-security = HTTPBasic()
+def make_session_token(password: str) -> str:
+    """Детерминированный токен из пароля. Меняется при смене пароля."""
+    return hmac.new(password.encode("utf-8"), b"amnezia-panel-session", hashlib.sha256).hexdigest()
 
-def authenticate(credentials: HTTPBasicCredentials = Depends(security)):
+def verify_session_token(token: str, password: str) -> bool:
+    if not token or not password:
+        return False
+    return hmac.compare_digest(token, make_session_token(password))
+
+class RedirectToLogin(Exception):
+    """Специальный сигнал для HTML-страниц: перенаправить на /login."""
+    pass
+
+def current_user(request: Request) -> str:
+    """Зависимость для всех защищённых роутов."""
     try:
         u, p = load_credentials()
     except RuntimeError:
         raise HTTPException(status_code=500, detail="Panel config error")
-    ok = (secrets.compare_digest(credentials.username, u)
-          and secrets.compare_digest(credentials.password, p))
-    if not ok:
-        raise HTTPException(
-            status_code=401,
-            detail="Bad credentials",
-            headers={"WWW-Authenticate": 'Basic realm="AmneziaWG Panel"'},
-        )
-    return credentials.username
+
+    token = request.cookies.get(SESSION_COOKIE, "")
+    if not verify_session_token(token, p):
+        # для API возвращаем 401, для страниц — редирект
+        if request.url.path.startswith("/api/"):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        raise RedirectToLogin()
+    return u
 
 # ==================== Парсинг состояния ====================
 def parse_clients():
@@ -158,7 +171,66 @@ def enrich(clients):
         c["status"]    = classify_status(c["handshake"])
     return clients
 
-# ==================== HTML ====================
+# ==================== HTML: LOGIN ====================
+LOGIN_TEMPLATE = r"""<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Login — AmneziaWG Panel</title>
+<style>
+  :root {
+    --bg:#f2f2f7; --card:#fff; --text:#1d1d1f; --muted:#6e6e73;
+    --border:#d2d2d7; --accent:#0071e3; --accent-hover:#0077ed;
+    --err-bg:#ffe5e5; --err-text:#a00;
+    --header-bg:#1d1d1f; --header-text:#fff;
+  }
+  html[data-theme="dark"] {
+    --bg:#1c1c1e; --card:#2c2c2e; --text:#f5f5f7; --muted:#98989d;
+    --border:#48484a; --accent:#0a84ff; --accent-hover:#409cff;
+    --err-bg:#3a1a1a; --err-text:#ff6961;
+    --header-bg:#000; --header-text:#fff;
+  }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,"Segoe UI",Roboto,sans-serif; margin:0; background:var(--bg); color:var(--text); min-height:100vh; display:flex; flex-direction:column; }
+  header { background:var(--header-bg); color:var(--header-text); padding:1em 2em; }
+  header h1 { margin:0; font-size:1.15em; font-weight:600; }
+  header .sub { font-size:.85em; opacity:.7; }
+  .wrap { flex:1; display:flex; align-items:center; justify-content:center; padding:2em 1em; }
+  .card { background:var(--card); border-radius:12px; padding:2em; max-width:400px; width:100%; box-shadow:0 4px 20px rgba(0,0,0,.08); }
+  .card h2 { margin:0 0 1.2em; font-size:1.2em; font-weight:600; text-align:center; }
+  input[type=text], input[type=password] { width:100%; padding:.85em 1em; border:1px solid var(--border); border-radius:8px; font-size:1em; margin-bottom:.9em; background:var(--card); color:var(--text); }
+  input:focus { outline:none; border-color:var(--accent); }
+  button { width:100%; padding:.9em 1em; border:none; border-radius:8px; background:var(--accent); color:#fff; cursor:pointer; font-size:1em; font-weight:500; }
+  button:hover { background:var(--accent-hover); }
+  .error { background:var(--err-bg); color:var(--err-text); padding:.8em 1em; border-radius:8px; margin-bottom:1em; font-size:.9em; text-align:center; }
+</style>
+</head><body>
+<header>
+  <h1>&#128737; AmneziaWG Panel</h1>
+  <div class="sub">__LABEL__</div>
+</header>
+<div class="wrap">
+  <div class="card">
+    <h2>Sign in</h2>
+    __ERR__
+    <form method="post" action="/login">
+      <input type="text" name="username" placeholder="Username" required autofocus autocomplete="username">
+      <input type="password" name="password" placeholder="Password" required autocomplete="current-password">
+      <button type="submit">Sign in</button>
+    </form>
+  </div>
+</div>
+<script>
+(function(){
+  var t = localStorage.getItem('theme') || 'light';
+  document.documentElement.setAttribute('data-theme', t);
+})();
+</script>
+</body></html>
+"""
+
+# ==================== HTML: MAIN ====================
 PAGE_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="en" data-theme="light">
 <head>
@@ -261,6 +333,7 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
     </div>
     <button id="restart-btn" class="btn ghost" title="Restart awg0 and awg1">&#128260; Restart</button>
     <button id="theme-toggle" class="btn ghost" title="Theme">&#127769;</button>
+    <a href="/logout" class="btn ghost" title="Logout">&#128682; Logout</a>
   </div>
 </header>
 <div class="container">
@@ -370,7 +443,7 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
     updating = true;
     try {
       var r = await fetch('/api/clients', { credentials:'same-origin', cache:'no-store' });
-      if (r.status === 401) { location.reload(); return; }
+      if (r.status === 401) { location.href = '/login'; return; }
       if (!r.ok) return;
       var clients = await r.json();
       var tbody = document.getElementById('clients-tbody');
@@ -399,6 +472,10 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
 </script>
 </body></html>
 """
+
+def render_login(error=""):
+    err_html = f'<div class="error">{error}</div>' if error else ""
+    return LOGIN_TEMPLATE.replace("__ERR__", err_html).replace("__LABEL__", SERVER_LABEL)
 
 def render_page(clients, message="", error=""):
     rows = []
@@ -441,45 +518,106 @@ def render_page(clients, message="", error=""):
 # ==================== Роуты ====================
 app = FastAPI(docs_url=None, redoc_url=None)
 
+# Обработчик сигнала RedirectToLogin — отправляем на /login
+from fastapi.responses import RedirectResponse as _RR
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+@app.exception_handler(RedirectToLogin)
+async def redirect_to_login_handler(request: Request, exc: RedirectToLogin):
+    return _RR("/login", status_code=303)
+
+# --- Публичные роуты ---
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request, error: str = ""):
+    # если уже залогинен — сразу на главную
+    try:
+        _, p = load_credentials()
+        token = request.cookies.get(SESSION_COOKIE, "")
+        if verify_session_token(token, p):
+            return _RR("/", status_code=303)
+    except RuntimeError:
+        pass
+    return render_login(error)
+
+@app.post("/login")
+async def login_submit(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+):
+    try:
+        u, p = load_credentials()
+    except RuntimeError:
+        return _RR("/login?error=Panel+config+error", status_code=303)
+
+    ok = (hmac.compare_digest(username, u)
+          and hmac.compare_digest(password, p))
+    if not ok:
+        return _RR("/login?error=Invalid+credentials", status_code=303)
+
+    token = make_session_token(p)
+    resp = _RR("/", status_code=303)
+    resp.set_cookie(
+        SESSION_COOKIE, token,
+        max_age=SESSION_DAYS * 24 * 3600,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        path="/",
+    )
+    return resp
+
+@app.get("/logout")
+async def logout():
+    resp = _RR("/login", status_code=303)
+    resp.delete_cookie(SESSION_COOKIE, path="/")
+    return resp
+
+# --- Защищённые роуты ---
 @app.get("/", response_class=HTMLResponse)
-async def index(user: str = Depends(authenticate), message: str = "", error: str = ""):
+async def index(request: Request, message: str = "", error: str = ""):
+    user = current_user(request)
     clients = enrich(parse_clients())
     return render_page(clients, message, error)
 
 @app.get("/api/clients")
-async def api_clients(user: str = Depends(authenticate)):
+async def api_clients(request: Request):
+    current_user(request)
     return JSONResponse(enrich(parse_clients()))
 
 @app.post("/create")
-async def create_client(name: str = Form(...), user: str = Depends(authenticate)):
+async def create_client(request: Request, name: str = Form(...)):
+    current_user(request)
     name_clean = re.sub(r"[^a-zA-Z0-9_-]", "", name)
     if not name_clean:
-        return RedirectResponse("/?error=Invalid+name", status_code=303)
+        return _RR("/?error=Invalid+name", status_code=303)
     try:
         subprocess.run([ADD_SCRIPT, name_clean], input="y\n",
                        capture_output=True, text=True, timeout=90, check=True)
-        return RedirectResponse(f"/?message=Client+{name_clean}+created", status_code=303)
+        return _RR(f"/?message=Client+{name_clean}+created", status_code=303)
     except subprocess.CalledProcessError as e:
         err = (e.stderr or e.stdout or "unknown error").strip()[:200]
-        return RedirectResponse(f"/?error={err.replace(' ','+').replace(chr(10),' ')}", status_code=303)
+        return _RR(f"/?error={err.replace(' ','+').replace(chr(10),' ')}", status_code=303)
     except subprocess.TimeoutExpired:
-        return RedirectResponse("/?error=Script+timeout+90s", status_code=303)
+        return _RR("/?error=Script+timeout+90s", status_code=303)
 
 @app.post("/delete/{name}")
-async def delete_client(name: str, user: str = Depends(authenticate)):
+async def delete_client(request: Request, name: str):
+    current_user(request)
     name_clean = re.sub(r"[^a-zA-Z0-9_-]", "", name)
     if not name_clean:
         raise HTTPException(status_code=400, detail="Invalid name")
     try:
         subprocess.run([REMOVE_SCRIPT, name_clean], input="y\n",
                        capture_output=True, text=True, timeout=60, check=True)
-        return RedirectResponse(f"/?message=Client+{name_clean}+deleted", status_code=303)
+        return _RR(f"/?message=Client+{name_clean}+deleted", status_code=303)
     except subprocess.CalledProcessError as e:
         err = (e.stderr or e.stdout or "error").strip()[:200]
-        return RedirectResponse(f"/?error={err.replace(' ','+').replace(chr(10),' ')}", status_code=303)
+        return _RR(f"/?error={err.replace(' ','+').replace(chr(10),' ')}", status_code=303)
 
 @app.post("/restart")
-async def restart_tunnels(user: str = Depends(authenticate)):
+async def restart_tunnels(request: Request):
+    current_user(request)
     results = []
     for iface in ["awg0", "awg1"]:
         try:
@@ -491,10 +629,11 @@ async def restart_tunnels(user: str = Depends(authenticate)):
         except subprocess.TimeoutExpired:
             results.append(f"{iface}: TIMEOUT")
     msg = " | ".join(results)
-    return RedirectResponse(f"/?message={msg.replace(' ','+')}", status_code=303)
+    return _RR(f"/?message={msg.replace(' ','+')}", status_code=303)
 
 @app.get("/download/conf/{name}")
-async def dl_conf(name: str, user: str = Depends(authenticate)):
+async def dl_conf(request: Request, name: str):
+    current_user(request)
     name_clean = re.sub(r"[^a-zA-Z0-9_-]", "", name)
     path = os.path.join(CLIENTS_DIR, f"{name_clean}.conf")
     if not os.path.isfile(path):
@@ -502,7 +641,8 @@ async def dl_conf(name: str, user: str = Depends(authenticate)):
     return FileResponse(path, media_type="text/plain", filename=f"{name_clean}.conf")
 
 @app.get("/download/vpn/{name}")
-async def dl_vpn(name: str, user: str = Depends(authenticate)):
+async def dl_vpn(request: Request, name: str):
+    current_user(request)
     name_clean = re.sub(r"[^a-zA-Z0-9_-]", "", name)
     path = os.path.join(CLIENTS_DIR, f"{name_clean}.vpn.txt")
     if not os.path.isfile(path):
@@ -510,7 +650,8 @@ async def dl_vpn(name: str, user: str = Depends(authenticate)):
     return FileResponse(path, media_type="text/plain", filename=f"{name_clean}.vpn.txt")
 
 @app.get("/qr/{name}")
-async def qr(name: str, user: str = Depends(authenticate)):
+async def qr(request: Request, name: str):
+    current_user(request)
     name_clean = re.sub(r"[^a-zA-Z0-9_-]", "", name)
     path = os.path.join(CLIENTS_DIR, f"{name_clean}.vpn.txt")
     if not os.path.isfile(path):
