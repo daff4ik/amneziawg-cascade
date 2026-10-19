@@ -195,10 +195,9 @@ def traffic_series(name: str, period: str):
             d_tx = tx - p_tx
             # если awg1 перезапускался — delta < 0, пропускаем
             if d_rx >= 0 and d_tx >= 0:
-                dt = max(1, ts - p_ts)
                 b = (ts // bucket) * bucket
-                buckets[b]["rx"] += d_rx / dt
-                buckets[b]["tx"] += d_tx / dt
+                buckets[b]["rx"] += d_rx
+                buckets[b]["tx"] += d_tx
         prev[pk] = (ts, rx, tx)
 
     labels = []
@@ -414,10 +413,11 @@ async function loadTraffic(target, period, btn){
   }
 }
 
-function fmtBps(b){
-  if (b >= 1048576) return (b/1048576).toFixed(2) + ' MiB/s';
-  if (b >= 1024)    return (b/1024).toFixed(2) + ' KiB/s';
-  return Math.round(b) + ' B/s';
+function fmtBytes(b){
+  if (b >= 1073741824) return (b/1073741824).toFixed(2) + ' GiB';
+  if (b >= 1048576)    return (b/1048576).toFixed(2) + ' MiB';
+  if (b >= 1024)       return (b/1024).toFixed(2) + ' KiB';
+  return Math.round(b) + ' B';
 }
 
 function renderChart(data){
@@ -453,14 +453,14 @@ function renderChart(data){
         legend: { labels: { color: dark ? '#f5f5f7' : '#1d1d1f' } },
         tooltip: {
           callbacks: {
-            label: function(ctx){ return ctx.dataset.label + ': ' + fmtBps(ctx.parsed.y); }
+            label: function(ctx){ return ctx.dataset.label + ': ' + fmtBytes(ctx.parsed.y); }
           }
         }
       },
       scales: {
         x: { ticks: { color: dark ? '#98989d' : '#6e6e73' }, grid: { color: dark ? '#3a3a3c' : '#ececf0' } },
         y: {
-          ticks: { color: dark ? '#98989d' : '#6e6e73', callback: function(v){ return fmtBps(v); } },
+          ticks: { color: dark ? '#98989d' : '#6e6e73', callback: function(v){ return fmtBytes(v); } },
           grid: { color: dark ? '#3a3a3c' : '#ececf0' },
           beginAtZero: true
         }

@@ -144,7 +144,7 @@ SCRIPTS_TO_DOWNLOAD=(
     amnezia-notify.sh
     amnezia-notify-setup.sh
     amnezia-healthcheck.sh
-    amnezia-traffic-collector.sh
+    amnezia-traffic-collector.py
 )
 for f in "${SCRIPTS_TO_DOWNLOAD[@]}"; do
     url="$REPO_URL/scripts/$f"
@@ -492,14 +492,14 @@ EOF
     ok "cron: healthcheck (каждый час)"
 fi
 
-if [[ -x /usr/local/bin/amnezia-traffic-collector.sh ]]; then
+if [[ -x /usr/local/bin/amnezia-traffic-collector.py ]]; then
     cat > /etc/cron.d/amnezia-traffic <<'EOF'
 # Сбор статистики трафика клиентов каждые 5 минут
-*/5 * * * * root /usr/local/bin/amnezia-traffic-collector.sh
+*/5 * * * * root /usr/local/bin/amnezia-traffic-collector.py
 EOF
     chmod 644 /etc/cron.d/amnezia-traffic
     # Первый прогон руками (чтобы БД сразу инициализировалась)
-    /usr/local/bin/amnezia-traffic-collector.sh 2>/dev/null || true
+    /usr/local/bin/amnezia-traffic-collector.py 2>/dev/null || true
     ok "cron: traffic collector (каждые 5 минут)"
 fi
 
@@ -661,7 +661,7 @@ vpn:// ссылки:         /root/clients/<имя>.vpn.txt
   Статус туннеля:      sudo awg show
   Проверить связь:     ping -c 3 $TUNNEL_B_IP
   Healthcheck вручную: sudo amnezia-healthcheck.sh
-  Собрать трафик:      sudo amnezia-traffic-collector.sh
+  Собрать трафик:      sudo amnezia-traffic-collector.py
   БД трафика:          /var/lib/amnezia-panel/traffic.db
 
 EOM

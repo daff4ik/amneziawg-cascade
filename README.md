@@ -785,6 +785,30 @@ file -i /opt/amnezia-panel.py   # должно быть charset=utf-8
 
 ---
 
+## 🔧 Troubleshooting (для опытных)
+
+Здесь собраны реальные проблемы, с которыми сталкивались при развёртывании, и способы их решения.
+
+---
+
+### 1. Туннель не устанавливает handshake, но публичный ping идёт
+
+**Симптомы:**
+- `ping <PUBLIC_IP_B>` с SERVER-A — OK, 49 мс.
+- `ping 10.10.10.1` — 100% потерь.
+- `sudo awg show awg0` на обоих показывает `transfer: 0 B received, N MiB sent` (или наоборот).
+- `latest handshake` отсутствует.
+
+**Причина:** три варианта по вероятности.
+
+**1.1. Разошлись параметры обфускации**
+
+Сверьте на **обоих** серверах:
+
+```bash
+sudo grep -E "^(HeaderProtectionKey|S1|S2|S3|S4|H1|H2|H3|H4|RandomTrailers|DisableCookies)" /etc/amnezia/amneziawg/awg0.conf | sort
+
+--- 
 ## 📜 Лицензия
 
 MIT. Используйте свободно.
