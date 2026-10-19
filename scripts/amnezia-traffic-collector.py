@@ -6,39 +6,27 @@ import subprocess
 import time
 import sys
 
-# ===== Проверка состояния =====
-STATE_FILE = "/var/lib/amnezia-panel/traffic_enabled"
-os.makedirs("/var/lib/amnezia-panel", exist_ok=True)
-if os.path.exists(STATE_FILE):
-    try:
-        with open(STATE_FILE) as _f:
-            if _f.read().strip() == "0":
-                sys.exit(0)  # сбор отключён
-    except Exception:
-        pass
-
 DB_DIR = "/var/lib/amnezia-panel"
 DB = f"{DB_DIR}/traffic.db"
 CONF = "/etc/amnezia/amneziawg/awg1.conf"
-RETAIN_DAYS = 90
 
 os.makedirs(DB_DIR, exist_ok=True)
 
 conn = sqlite3.connect(DB)
+# Новая таблица для накопительной статистики
 conn.execute("""
-CREATE TABLE IF NOT EXISTS traffic (
-    ts INTEGER NOT NULL,
-    pubkey TEXT NOT NULL,
+CREATE TABLE IF NOT EXISTS client_stats (
+    pubkey TEXT PRIMARY KEY,
     name TEXT,
-    rx_total INTEGER NOT NULL,
-    tx_total INTEGER NOT NULL,
-    PRIMARY KEY (ts, pubkey)
+    total_rx INTEGER DEFAULT 0,
+    total_tx INTEGER DEFAULT 0,
+    last_rx INTEGER DEFAULT 0,
+    last_tx INTEGER DEFAULT 0,
+    last_handshake INTEGER DEFAULT 0
 );
 """)
-conn.execute("CREATE INDEX IF NOT EXISTS idx_traffic_name ON traffic(name, ts);")
-conn.execute("CREATE INDEX IF NOT EXISTS idx_traffic_ts ON traffic(ts);")
 
-# Парсим awg1.conf, чтобы получить карту pubkey -> имя клиента
+# Получаем имена клиентов из конфига
 names = {}
 if os.path.exists(CONF):
     with open(CONF, encoding="utf-8") as f:
@@ -51,52 +39,60 @@ if os.path.exists(CONF):
         if nm and pk:
             names[pk.group(1)] = nm.group(1)
 
-def parse_bytes(s):
-    """Парсит строку вида '55.88 MiB' или '0 B' в целые байты."""
-    if not s:
-        return 0
-    m = re.match(r"^\s*([\d.]+)\s*([KMG]?i?B|B)\s*$", str(s), re.I)
-    if not m:
-        return 0
-    v = float(m.group(1))
-    u = m.group(2).upper().replace("I", "")
-    return int(v * {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3}.get(u, 1))
-
-# Используем awg show awg1 (человеческий формат) — как в самой панели
+# Используем dump для получения точных цифр (байты) и unix timestamp handshake
 try:
-    r = subprocess.run(["awg", "show", "awg1"], capture_output=True,
-                       text=True, timeout=15, check=True)
+    out = subprocess.check_output(["awg", "show", "awg1", "dump"], text=True, timeout=10)
 except Exception as e:
-    print(f"ERROR: failed to run awg show: {e}")
+    print(f"ERROR: failed to run awg show dump: {e}")
     sys.exit(1)
 
-stats = {}
-cur = None
-for line in r.stdout.splitlines():
-    s = line.strip()
-    m = re.match(r"^peer:\s*(\S+)", s)
-    if m:
-        cur = m.group(1)
-        stats[cur] = {"rx": 0, "tx": 0}
-        continue
-    if not cur:
-        continue
-    m = re.match(r"^transfer:\s*(.+?)\s+received,\s*(.+?)\s+sent", s)
-    if m:
-        stats[cur]["rx"] = parse_bytes(m.group(1))
-        stats[cur]["tx"] = parse_bytes(m.group(2))
+cur = conn.cursor()
+now_ts = int(time.time())
 
-ts = int(time.time())
-for pub, s in stats.items():
+# Первая строка (интерфейс) пропускается
+for line in out.strip().split("\n")[1:]:
+    parts = line.split("\t")
+    if len(parts) < 8:
+        continue
+    
+    pub = parts[0]
+    handshake_ts = int(parts[4]) # Unix timestamp или 0
+    rx_bytes = int(parts[5])
+    tx_bytes = int(parts[6])
     name = names.get(pub, "unknown")
-    conn.execute(
-        "INSERT OR REPLACE INTO traffic(ts,pubkey,name,rx_total,tx_total) VALUES(?,?,?,?,?)",
-        (ts, pub, name, s["rx"], s["tx"])
-    )
 
-# Очистка старых данных (раз в сутки)
-if ts % 86400 < 300:
-    conn.execute("DELETE FROM traffic WHERE ts < ?", (ts - RETAIN_DAYS * 86400,))
+    cur.execute("SELECT total_rx, total_tx, last_rx, last_tx, last_handshake FROM client_stats WHERE pubkey=?", (pub,))
+    row = cur.fetchone()
+
+    if row:
+        total_rx, total_tx, last_rx, last_tx, old_handshake = row
+        
+        # Вычисляем дельту (если awg перезапускался, счетчики могли сброситься)
+        d_rx = rx_bytes - last_rx if rx_bytes >= last_rx else rx_bytes
+        d_tx = tx_bytes - last_tx if tx_bytes >= last_tx else tx_bytes
+        
+        total_rx += d_rx
+        total_tx += d_tx
+        
+        # Сохраняем самый свежий handshake
+        new_handshake = max(old_handshake, handshake_ts) if handshake_ts > 0 else old_handshake
+
+        cur.execute("""
+            UPDATE client_stats 
+            SET name=?, total_rx=?, total_tx=?, last_rx=?, last_tx=?, last_handshake=?
+            WHERE pubkey=?
+        """, (name, total_rx, total_tx, rx_bytes, tx_bytes, new_handshake, pub))
+    else:
+        # Первое появление клиента
+        cur.execute("""
+            INSERT INTO client_stats (pubkey, name, total_rx, total_tx, last_rx, last_tx, last_handshake)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (pub, name, rx_bytes, tx_bytes, rx_bytes, tx_bytes, handshake_ts))
+
+# Очищаем БД от тех, кто удален из awg1.conf (чтобы не копился мусор)
+if names:
+    placeholders = ','.join('?' * len(names))
+    cur.execute(f"DELETE FROM client_stats WHERE pubkey NOT IN ({placeholders})", tuple(names.keys()))
 
 conn.commit()
 conn.close()

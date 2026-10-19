@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""AmneziaWG Web Panel — с графиками трафика, i18n и проверкой обновлений."""
+"""AmneziaWG Web Panel — упрощенная версия с накопительным трафиком."""
 import os
 import re
 import io
@@ -12,6 +12,7 @@ import subprocess
 import time
 import urllib.request
 import json
+import datetime
 from fastapi import FastAPI, HTTPException, Depends, Form, Request
 from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse, Response, JSONResponse
 from starlette.concurrency import run_in_threadpool
@@ -28,10 +29,9 @@ REMOVE_SCRIPT = "/usr/local/bin/amnezia-remove-client.sh"
 NOTIFY_SCRIPT = "/usr/local/bin/amnezia-notify.sh"
 TRAFFIC_DB    = "/var/lib/amnezia-panel/traffic.db"
 SERVER_LABEL  = "__SERVER_LABEL__"
-TRAFFIC_STATE_FILE = "/var/lib/amnezia-panel/traffic_enabled"
-UPDATE_SCRIPT      = "/usr/local/bin/amnezia-update.sh"
-COMMIT_STATE_FILE  = "/var/lib/amnezia-panel/installed_commit"
-REPO_API_URL       = "https://api.github.com/repos/davideprikyan/amneziawg-cascade/commits"
+UPDATE_SCRIPT = "/usr/local/bin/amnezia-update.sh"
+COMMIT_STATE_FILE = "/var/lib/amnezia-panel/installed_commit"
+REPO_API_URL      = "https://api.github.com/repos/davideprikyan/amneziawg-cascade/commits"
 
 SESSION_COOKIE = "amnezia_session"
 SESSION_DAYS   = 7
@@ -48,7 +48,6 @@ def load_credentials():
                 continue
             k, v = line.split("=", 1)
             cfg[k.strip()] = v.strip()
-    # Используем .get() чтобы избежать KeyError, если файл поврежден
     return cfg.get("username", "admin"), cfg.get("password", "admin")
 
 def make_token(p: str) -> str:
@@ -68,15 +67,6 @@ def current_user(request: Request) -> str:
             raise HTTPException(401, "Unauthorized")
         raise RedirectToLogin()
     return u
-
-def is_traffic_enabled() -> bool:
-    if not os.path.exists(TRAFFIC_STATE_FILE):
-        return True
-    try:
-        with open(TRAFFIC_STATE_FILE) as f:
-            return f.read().strip() == "1"
-    except Exception:
-        return True
 
 # ================ Update Check ================
 def get_installed_commit():
@@ -111,9 +101,8 @@ def check_github_updates():
             with urllib.request.urlopen(req_f, timeout=5) as resp_f:
                 data = json.loads(resp_f.read().decode())
                 for f in data.get("files", []):
-                    if f["filename"] in ("deploy.sh", "web-panel/amnezia-panel.service") or f["filename"].startswith("scripts/"):
-                        if f["filename"] == "deploy.sh" or f["filename"].endswith(".service"):
-                            requires_ssh = True
+                    if f["filename"] == "deploy.sh" or f["filename"].endswith(".service"):
+                        requires_ssh = True
         except Exception:
             pass
 
@@ -124,7 +113,7 @@ def check_github_updates():
         "latest_sha": commits[0]["sha"] if commits else ""
     }
 
-# ================ Парсинг ================
+# ================ Парсинг и Статистика ================
 def parse_clients():
     if not os.path.exists(AWG_CONF):
         return []
@@ -142,50 +131,33 @@ def parse_clients():
                         "ip": ip.group(1) if ip else "?"})
     return out
 
-def awg_stats():
+def get_live_status():
+    """Возвращает статус (онлайн/оффлайн) на основе свежих данных awg"""
     try:
-        r = subprocess.run(["awg", "show", AWG_IFACE], capture_output=True,
-                           text=True, timeout=10, check=True)
+        r = subprocess.run(["awg", "show", AWG_IFACE], capture_output=True, text=True, timeout=5)
+        stats = {}
+        cur = None
+        for line in r.stdout.splitlines():
+            s = line.strip()
+            m = re.match(r"^peer:\s*(\S+)", s)
+            if m:
+                cur = m.group(1)
+                stats[cur] = "OFFLINE"
+                continue
+            if cur and "latest handshake:" in s:
+                if "second" in s or ("minute" in s and "minutes" not in s):
+                    stats[cur] = "ONLINE"
+                elif "minutes" in s:
+                    mins = int(re.search(r"(\d+)\s+minutes", s).group(1))
+                    if mins < 3:
+                        stats[cur] = "ONLINE"
+        return stats
     except Exception:
         return {}
-    stats, cur = {}, None
-    for line in r.stdout.splitlines():
-        s = line.strip()
-        m = re.match(r"^peer:\s*(\S+)", s)
-        if m:
-            cur = m.group(1)
-            stats[cur] = {"handshake": "never", "rx": "0 B", "tx": "0 B"}
-            continue
-        if not cur:
-            continue
-        m = re.match(r"^latest handshake:\s*(.+)", s)
-        if m:
-            stats[cur]["handshake"] = m.group(1); continue
-        m = re.match(r"^transfer:\s*(.+?)\s+received,\s*(.+?)\s+sent", s)
-        if m:
-            stats[cur]["rx"] = m.group(1); stats[cur]["tx"] = m.group(2)
-    return stats
 
-def status_of(hs):
-    if hs == "never":
-        return "NEVER"
-    m = re.match(r"^(\d+)\s+second", hs)
-    if m:
-        return "ONLINE"
-    m = re.match(r"^(\d+)\s+minute", hs)
-    if m:
-        return "ONLINE" if int(m.group(1)) < 3 else "OFFLINE"
-    return "OFFLINE"
-
-def parse_bytes(s):
-    if not s:
-        return 0.0
-    m = re.match(r"^\s*([\d.]+)\s*([KMG]?i?B|B)\s*$", str(s), re.I)
-    if not m:
-        return 0.0
-    v = float(m.group(1))
-    u = m.group(2).upper().replace("I", "")
-    return v * {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3}.get(u, 1)
+def fmt_handshake(ts):
+    if ts == 0: return "никогда"
+    return datetime.datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
 
 def fmt_bytes(b):
     if b >= 1024**3: return f"{b/1024**3:.2f} GiB"
@@ -194,59 +166,49 @@ def fmt_bytes(b):
     return f"{int(b)} B"
 
 def enrich(clients):
-    st = awg_stats()
+    live_status = get_live_status()
+    db_stats = {}
+    
+    if os.path.exists(TRAFFIC_DB):
+        try:
+            conn = sqlite3.connect(TRAFFIC_DB)
+            cur = conn.cursor()
+            cur.execute("SELECT pubkey, total_rx, total_tx, last_handshake FROM client_stats")
+            for row in cur.fetchall():
+                db_stats[row[0]] = {
+                    "total_rx": row[1],
+                    "total_tx": row[2],
+                    "last_handshake": row[3]
+                }
+            conn.close()
+        except Exception:
+            pass
+
     for c in clients:
-        s = st.get(c["pubkey"], {})
-        c["handshake"] = s.get("handshake", "never")
-        c["rx"]        = s.get("rx", "0 B")
-        c["tx"]        = s.get("tx", "0 B")
-        c["status"]    = status_of(c["handshake"])
+        st = db_stats.get(c["pubkey"], {})
+        c["rx"] = fmt_bytes(st.get("total_rx", 0))
+        c["tx"] = fmt_bytes(st.get("total_tx", 0))
+        c["handshake"] = fmt_handshake(st.get("last_handshake", 0))
+        c["status"] = live_status.get(c["pubkey"], "NEVER" if not st else "OFFLINE")
+        
     return clients
 
 def total_traffic(clients):
-    rx = sum(parse_bytes(c.get("rx", "0 B")) for c in clients)
-    tx = sum(parse_bytes(c.get("tx", "0 B")) for c in clients)
+    rx = 0
+    tx = 0
+    if os.path.exists(TRAFFIC_DB):
+        try:
+            conn = sqlite3.connect(TRAFFIC_DB)
+            cur = conn.cursor()
+            cur.execute("SELECT SUM(total_rx), SUM(total_tx) FROM client_stats")
+            row = cur.fetchone()
+            if row:
+                rx = row[0] or 0
+                tx = row[1] or 0
+            conn.close()
+        except Exception:
+            pass
     return fmt_bytes(rx), fmt_bytes(tx)
-
-# ================ Статистика ================
-def traffic_series(name: str, period: str):
-    if not os.path.exists(TRAFFIC_DB):
-        return {"labels": [], "rx": [], "tx": [], "error": "no data yet"}
-    now = int(time.time())
-    conf = {
-        "1h":  (now - 3600,    300),
-        "24h": (now - 86400,   1800),
-        "7d":  (now - 7*86400, 7200),
-    }
-    start, bucket = conf.get(period, conf["24h"])
-    conn = sqlite3.connect(TRAFFIC_DB)
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
-    if name == "total":
-        cur.execute("SELECT pubkey, ts, rx_total, tx_total FROM traffic WHERE ts >= ? ORDER BY pubkey, ts", (start,))
-    else:
-        cur.execute("SELECT pubkey, ts, rx_total, tx_total FROM traffic WHERE name = ? AND ts >= ? ORDER BY pubkey, ts", (name, start))
-    rows = cur.fetchall()
-    conn.close()
-    from collections import defaultdict
-    buckets = defaultdict(lambda: {"rx": 0.0, "tx": 0.0})
-    prev = {}
-    for row in rows:
-        pk, ts, rx, tx = row["pubkey"], row["ts"], row["rx_total"], row["tx_total"]
-        if pk in prev:
-            p_ts, p_rx, p_tx = prev[pk]
-            d_rx, d_tx = rx - p_rx, tx - p_tx
-            if d_rx >= 0 and d_tx >= 0:
-                b = (ts // bucket) * bucket
-                buckets[b]["rx"] += d_rx
-                buckets[b]["tx"] += d_tx
-        prev[pk] = (ts, rx, tx)
-    labels, rxs, txs = [], [], []
-    for b in sorted(buckets.keys()):
-        labels.append(time.strftime("%H:%M", time.localtime(b)) if period in ("1h","24h") else time.strftime("%d.%m %H:%M", time.localtime(b)))
-        rxs.append(round(buckets[b]["rx"], 1))
-        txs.append(round(buckets[b]["tx"], 1))
-    return {"labels": labels, "rx": rxs, "tx": txs}
 
 # ================ HTML: login ================
 LOGIN_TEMPLATE = r"""<!DOCTYPE html>
@@ -295,7 +257,6 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="ru" data-theme="light"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AmneziaWG Panel</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
   :root{--bg:#f2f2f7;--card:#fff;--text:#1d1d1f;--muted:#6e6e73;--border:#ececf0;--input-bg:#fff;--input-border:#d2d2d7;--accent:#0071e3;--accent-hover:#0077ed;--btn-bg:#e8e8ed;--btn-bg-hover:#dcdce1;--btn-danger-bg:#ffe5e5;--btn-danger-text:#c00;--btn-danger-hover:#ffcccc;--ok-bg:#e5f7ec;--ok-text:#006c2b;--ok-border:#009e3d;--err-bg:#ffe5e5;--err-text:#a00;--err-border:#c00;--header-bg:#1d1d1f;--header-text:#fff;--online:#009e3d;--offline:#ff9500;--never:#8e8e93}
   html[data-theme=dark]{--bg:#1c1c1e;--card:#2c2c2e;--text:#f5f5f7;--muted:#98989d;--border:#3a3a3c;--input-bg:#1c1c1e;--input-border:#48484a;--accent:#0a84ff;--accent-hover:#409cff;--btn-bg:#3a3a3c;--btn-bg-hover:#48484a;--btn-danger-bg:#4a1e1e;--btn-danger-text:#ff6961;--btn-danger-hover:#5c2424;--ok-bg:#1a3a24;--ok-text:#6bd68a;--ok-border:#30d158;--err-bg:#3a1a1a;--err-text:#ff6961;--err-border:#ff453a;--header-bg:#000;--header-text:#fff;--online:#30d158;--offline:#ffd60a;--never:#8e8e93}
@@ -305,8 +266,7 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
   header h1{margin:0;font-size:1.15em;font-weight:600}
   header .sub{font-size:.85em;opacity:.7}
   .header-actions{display:flex;gap:.5em;align-items:center;flex-wrap:wrap}
-  .traffic-summary{display:flex;flex-direction:column;gap:.15em;padding:.4em .9em;margin-right:.5em;border:1px solid rgba(255,255,255,.25);border-radius:8px;font-size:.78em;background:rgba(255,255,255,.05);font-family:SF Mono,Consolas,Menlo,monospace;letter-spacing:.02em;cursor:pointer;transition:background .15s}
-  .traffic-summary:hover{background:rgba(255,255,255,.15)}
+  .traffic-summary{display:flex;flex-direction:column;gap:.15em;padding:.4em .9em;margin-right:.5em;border:1px solid rgba(255,255,255,.25);border-radius:8px;font-size:.78em;background:rgba(255,255,255,.05);font-family:SF Mono,Consolas,Menlo,monospace;letter-spacing:.02em;align-self:center;}
   .traffic-row{display:flex;gap:.5em;align-items:center;white-space:nowrap}
   .traffic-label{opacity:.65;min-width:3.2em}
   .traffic-value{color:#4ade80;font-weight:600}
@@ -331,8 +291,6 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
   td.s-offline{color:var(--offline)}
   td.s-never{color:var(--never)}
   td.empty{text-align:center;color:var(--muted);padding:2em}
-  .client-name{color:var(--accent);cursor:pointer;font-weight:600}
-  .client-name:hover{text-decoration:underline}
   .alert{padding:.9em 1.2em;border-radius:8px;margin-bottom:1em;font-size:.92em}
   .alert.ok{background:var(--ok-bg);color:var(--ok-text);border-left:4px solid var(--ok-border)}
   .alert.err{background:var(--err-bg);color:var(--err-text);border-left:4px solid var(--err-border)}
@@ -342,10 +300,6 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
   .modal-content img{max-width:100%;height:auto;background:#fff;padding:1em;border-radius:8px}
   .close{position:absolute;top:.5em;right:1em;font-size:1.8em;cursor:pointer;color:var(--muted);line-height:1}
   .close:hover{color:var(--text)}
-  .period-btns{display:flex;gap:.5em;margin:1em 0}
-  .period-btns button{background:var(--btn-bg);color:var(--text);padding:.5em 1em;font-size:.85em}
-  .period-btns button.active{background:var(--accent);color:#fff}
-  #traffic-chart{max-height:400px}
   .update-list{margin:1em 0;max-height:300px;overflow-y:auto;text-align:left;font-size:0.9em;border:1px solid var(--border);border-radius:8px;padding:0.5em}
   .update-item{padding:0.5em;border-bottom:1px solid var(--border)}
   .update-item:last-child{border-bottom:none}
@@ -361,11 +315,10 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
 <header>
   <div><h1>🛡️ AmneziaWG Panel</h1><div class="sub">__LABEL__</div></div>
   <div class="header-actions">
-    <div class="traffic-summary" id="total-traffic-btn" title="Click for total traffic chart">
+    <div class="traffic-summary" title="Total traffic">
       <div class="traffic-row"><span class="traffic-label">⬇ RX:</span><span class="traffic-value" id="total-rx">__TOTAL_RX__</span></div>
       <div class="traffic-row"><span class="traffic-label">⬆ TX:</span><span class="traffic-value" id="total-tx">__TOTAL_TX__</span></div>
     </div>
-    <button id="traffic-toggle-btn" class="btn ghost" title="Toggle traffic collection">&#128202; Track: ...</button>
     <button id="check-update-btn" class="btn ghost" data-i18n="btn_check_update">🔄 Проверить обновления</button>    
     <button id="restart-btn" class="btn ghost" data-i18n="btn_restart">🔄 Перезапуск</button>
     <div class="lang-dropdown">
@@ -393,8 +346,8 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
     <div class="refresh-indicator"><span data-i18n="updated">Обновлено:</span> <span id="last-update">--</span></div>
     <table><thead><tr>
       <th data-i18n="th_name">Имя</th><th data-i18n="th_ip">IP</th><th data-i18n="th_status">Статус</th>
-      <th data-i18n="th_rx">RX (от клиента)</th><th data-i18n="th_tx">TX (клиенту)</th>
-      <th data-i18n="th_handshake">Handshake</th><th data-i18n="th_actions">Действия</th>
+      <th data-i18n="th_rx">RX (всего)</th><th data-i18n="th_tx">TX (всего)</th>
+      <th data-i18n="th_handshake">Последний handshake</th><th data-i18n="th_actions">Действия</th>
     </tr></thead>
     <tbody id="clients-tbody">__ROWS__</tbody></table>
   </div>
@@ -406,18 +359,6 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
   <h3>QR: <span id="qr-name"></span></h3>
   <p style="font-size:.85em;color:var(--muted)">Scan in AmneziaVPN</p>
   <img id="qr-img" src="" alt="QR">
-</div></div>
-
-<!-- Traffic chart modal -->
-<div id="traffic-modal" class="modal"><div class="modal-content">
-  <span class="close" onclick="closeTraffic()">&times;</span>
-  <h3 id="traffic-title" data-i18n="traffic_title">Трафик</h3>
-  <div class="period-btns">
-    <button data-period="1h" onclick="loadTraffic(currentTrafficTarget,'1h',this)">1h</button>
-    <button data-period="24h" onclick="loadTraffic(currentTrafficTarget,'24h',this)" class="active">24h</button>
-    <button data-period="7d" onclick="loadTraffic(currentTrafficTarget,'7d',this)">7d</button>
-  </div>
-  <canvas id="traffic-chart"></canvas>
 </div></div>
 
 <!-- Update Modal -->
@@ -435,8 +376,6 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
 </div></div>
 
 <script>
-var currentTrafficTarget = null;
-var trafficChart = null;
 var latestShaToSave = "";
 var currentLang = localStorage.getItem('lang') || 'ru';
 
@@ -445,23 +384,19 @@ const i18n = {
     signin: "Вход", btn_login: "Войти", btn_restart: "🔄 Перезапуск", btn_logout: "🚪 Выход",
     create_title: "➕ Создать нового клиента", btn_create: "Создать",
     clients_title: "👥 Клиенты", updated: "Обновлено:",
-    th_name: "Имя", th_ip: "IP", th_status: "Статус", th_rx: "RX (от клиента)", th_tx: "TX (клиенту)", th_handshake: "Handshake", th_actions: "Действия",
-    traffic_title: "Трафик", update_avail: "Доступны обновления", update_ssh_warn: "⚠️ Внимание! Одно из обновлений затрагивает системные файлы. Для его полного применения потребуется вход по SSH и запуск deploy.sh --update.",
+    th_name: "Имя", th_ip: "IP", th_status: "Статус", th_rx: "RX (всего)", th_tx: "TX (всего)", th_handshake: "Последний handshake", th_actions: "Действия",
+    update_avail: "Доступны обновления", update_ssh_warn: "⚠️ Внимание! Одно из обновлений затрагивает системные файлы. Для его полного применения потребуется вход по SSH и запуск deploy.sh --update.",
     btn_ignore: "Игнорировать", btn_update: "Обновить", no_updates: "Обновлений не найдено. У вас последняя версия.", err_check: "Ошибка проверки обновлений: ",
-    confirm_update: "Обновить панель и скрипты? Страница перезагрузится через ~20 секунд.", updating: "Обновление...",
-    btn_check_update: "🔄 Проверить обновления",
-    checking: "⏳ Проверка..."
+    updating: "Обновление...", btn_check_update: "🔄 Проверить обновления", checking: "⏳ Проверка..."
   },
   en: {
     signin: "Sign in", btn_login: "Sign in", btn_restart: "🔄 Restart", btn_logout: "🚪 Logout",
     create_title: "➕ Create new client", btn_create: "Create",
     clients_title: "👥 Clients", updated: "Updated:",
-    th_name: "Name", th_ip: "IP", th_status: "Status", th_rx: "RX (from client)", th_tx: "TX (to client)", th_handshake: "Handshake", th_actions: "Actions",
-    traffic_title: "Traffic", update_avail: "Updates Available", update_ssh_warn: "⚠️ Warning! Some updates affect system files. You will need SSH access and deploy.sh --update to apply them fully.",
+    th_name: "Name", th_ip: "IP", th_status: "Status", th_rx: "RX (total)", th_tx: "TX (total)", th_handshake: "Last handshake", th_actions: "Actions",
+    update_avail: "Updates Available", update_ssh_warn: "⚠️ Warning! Some updates affect system files. You will need SSH access and deploy.sh --update to apply them fully.",
     btn_ignore: "Ignore", btn_update: "Update", no_updates: "No updates found. You are on the latest version.", err_check: "Update check error: ",
-    confirm_update: "Update panel and scripts? Page will reload in ~20s.", updating: "Updating...",
-    btn_check_update: "🔄 Check Update",
-    checking: "⏳ Checking..."
+    updating: "Updating...", btn_check_update: "🔄 Check Update", checking: "⏳ Checking..."
   }
 };
 
@@ -494,9 +429,6 @@ function applyLang() {
   var ub = document.getElementById('check-update-btn');
   if (ub && !ub.disabled) ub.textContent = t('btn_check_update');
   
-  var title = document.getElementById('traffic-title');
-  if (title && currentTrafficTarget) title.textContent = (currentLang==='ru'?'Трафик: ':'Traffic: ') + currentTrafficTarget;
-  
   if (typeof refreshTableOnly === 'function') refreshTableOnly();
 }
 
@@ -510,50 +442,7 @@ function applyLang() {
     document.documentElement.setAttribute('data-theme', next);
     localStorage.setItem('theme', next);
     tt.textContent = next === 'dark' ? '☀️' : '🌙';
-    if (trafficChart) {
-      var dark = next === 'dark';
-      trafficChart.options.scales.x.ticks.color = dark ? '#98989d' : '#6e6e73';
-      trafficChart.options.scales.y.ticks.color = dark ? '#98989d' : '#6e6e73';
-      trafficChart.options.scales.x.grid.color = dark ? '#3a3a3c' : '#ececf0';
-      trafficChart.options.scales.y.grid.color = dark ? '#3a3a3c' : '#ececf0';
-      trafficChart.update();
-    }
   });
-
-  // ===== Traffic toggle =====
-  var trafficEnabled = true;
-  async function loadTrafficStatus() {
-    try {
-      var r = await fetch('/api/traffic/status', {credentials: 'same-origin'});
-      if (r.ok) {
-        var d = await r.json();
-        trafficEnabled = d.enabled;
-        updateTrafficBtn();
-      }
-    } catch(e) {}
-  }
-  function updateTrafficBtn() {
-    var b = document.getElementById('traffic-toggle-btn');
-    if (!b) return;
-    b.textContent = trafficEnabled ? '\uD83D\uDCCA Track: ON' : '\uD83D\uDCCA Track: OFF';
-    b.style.opacity = trafficEnabled ? '1' : '0.6';
-  }
-  async function toggleTraffic() {
-    try {
-      var r = await fetch('/api/traffic/toggle', {credentials: 'same-origin', method: 'POST'});
-      if (r.status === 401) { location.href = '/login'; return; }
-      if (r.ok) {
-        var d = await r.json();
-        trafficEnabled = d.enabled;
-        updateTrafficBtn();
-      }
-    } catch(e) {}
-  }
-  var _tb = document.getElementById('traffic-toggle-btn');
-  if (_tb) {
-    _tb.addEventListener('click', toggleTraffic);
-    loadTrafficStatus();
-  }
 
   // ===== Check Update =====
   var _ub = document.getElementById('check-update-btn');
@@ -596,10 +485,6 @@ function applyLang() {
     document.body.appendChild(f); f.submit();
   });
 
-  document.getElementById('total-traffic-btn').addEventListener('click', function(){
-    openTraffic('total', t('traffic_title'));
-  });
-
   applyLang();
 })();
 
@@ -628,72 +513,6 @@ async function doUpdate() {
   }
 }
 
-function closeTraffic(){
-  document.getElementById('traffic-modal').style.display='none';
-  if (trafficChart) { trafficChart.destroy(); trafficChart = null; }
-}
-
-function openTraffic(target, title){
-  currentTrafficTarget = target;
-  document.getElementById('traffic-title').textContent = (currentLang==='ru'?'Трафик: ':'Traffic: ') + (target==='total'?'Всего':target);
-  document.getElementById('traffic-modal').style.display = 'block';
-  document.querySelectorAll('.period-btns button').forEach(function(b){ b.classList.remove('active'); });
-  document.querySelector('.period-btns button[data-period="24h"]').classList.add('active');
-  loadTraffic(target, '24h', null);
-}
-
-async function loadTraffic(target, period, btn){
-  if (btn) {
-    document.querySelectorAll('.period-btns button').forEach(function(b){ b.classList.remove('active'); });
-    btn.classList.add('active');
-  }
-  var url = target === 'total' ? '/api/stats/total?period=' + period
-                               : '/api/stats/' + encodeURIComponent(target) + '?period=' + period;
-  try {
-    var r = await fetch(url, { credentials: 'same-origin' });
-    if (r.status === 401) { location.href = '/login'; return; }
-    var data = await r.json();
-    renderChart(data);
-  } catch(e) {
-    alert('Failed to load chart: ' + e);
-  }
-}
-
-function fmtBytes(b){
-  if (b >= 1073741824) return (b/1073741824).toFixed(2) + ' GiB';
-  if (b >= 1048576)    return (b/1048576).toFixed(2) + ' MiB';
-  if (b >= 1024)       return (b/1024).toFixed(2) + ' KiB';
-  return Math.round(b) + ' B';
-}
-
-function renderChart(data){
-  var ctx = document.getElementById('traffic-chart').getContext('2d');
-  if (trafficChart) trafficChart.destroy();
-  var dark = document.documentElement.getAttribute('data-theme') === 'dark';
-  trafficChart = new Chart(ctx, {
-    type: 'line',
-    data: {
-      labels: data.labels,
-      datasets: [
-        { label: 'RX (from clients)', data: data.rx, borderColor: '#4ade80', backgroundColor: 'rgba(74,222,128,0.1)', fill: true, tension: 0.3, pointRadius: 2, borderWidth: 2 },
-        { label: 'TX (to clients)', data: data.tx, borderColor: '#60a5fa', backgroundColor: 'rgba(96,165,250,0.1)', fill: true, tension: 0.3, pointRadius: 2, borderWidth: 2 }
-      ]
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      interaction: { mode: 'index', intersect: false },
-      plugins: {
-        legend: { labels: { color: dark ? '#f5f5f7' : '#1d1d1f' } },
-        tooltip: { callbacks: { label: function(ctx){ return ctx.dataset.label + ': ' + fmtBytes(ctx.parsed.y); } } }
-      },
-      scales: {
-        x: { ticks: { color: dark ? '#98989d' : '#6e6e73' }, grid: { color: dark ? '#3a3a3c' : '#ececf0' } },
-        y: { ticks: { color: dark ? '#98989d' : '#6e6e73', callback: function(v){ return fmtBytes(v); } }, grid: { color: dark ? '#3a3a3c' : '#ececf0' }, beginAtZero: true }
-      }
-    }
-  });
-}
-
 document.addEventListener('click', function(e){
   var qr = e.target.closest ? e.target.closest('.qr-btn') : null;
   if (qr) {
@@ -704,15 +523,7 @@ document.addEventListener('click', function(e){
     document.getElementById('qr-modal').style.display = 'block';
     return;
   }
-  var cn = e.target.closest ? e.target.closest('.client-name') : null;
-  if (cn) {
-    e.preventDefault();
-    var n = cn.getAttribute('data-name');
-    openTraffic(n, (currentLang==='ru'?'Трафик: ':'Traffic: ') + n);
-    return;
-  }
   if (e.target.id === 'qr-modal') document.getElementById('qr-modal').style.display = 'none';
-  if (e.target.id === 'traffic-modal') closeTraffic();
 });
 
 var _tableClients = [];
@@ -726,7 +537,7 @@ function buildRow(c){
   }
   var btnDelete = currentLang === 'ru' ? 'Удалить' : 'Delete';
   return '<tr>'+
-    '<td><span class="client-name" data-name="'+esc(c.name)+'">'+esc(c.name)+'</span></td>'+
+    '<td><strong>'+esc(c.name)+'</strong></td>'+
     '<td>'+esc(c.ip)+'</td>'+
     '<td class="s-'+c.status.toLowerCase()+'">'+statusLabel+'</td>'+
     '<td>'+esc(c.rx)+'</td>'+
@@ -742,19 +553,6 @@ function buildRow(c){
 }
 
 function esc(s){ var d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
-function parseBytes(s){
-  if (!s) return 0;
-  var m = String(s).match(/^\s*([\d.]+)\s*([KMG]?i?B|B)\s*$/i);
-  if (!m) return 0;
-  var mult = { 'B':1,'KB':1024,'MB':1048576,'GB':1073741824 };
-  return parseFloat(m[1]) * (mult[m[2].toUpperCase().replace('I','')] || 1);
-}
-function fmtBytes(b){
-  if (b >= 1073741824) return (b/1073741824).toFixed(2)+' GiB';
-  if (b >= 1048576)    return (b/1048576).toFixed(2)+' MiB';
-  if (b >= 1024)       return (b/1024).toFixed(2)+' KiB';
-  return Math.round(b)+' B';
-}
 
 function refreshTableOnly() {
   if (!_tableClients.length) return;
@@ -777,10 +575,10 @@ async function refresh(){
       : _tableClients.map(buildRow).join('');
     document.getElementById('clients-count').textContent = _tableClients.length;
     document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
-    var rxs = 0, txs = 0;
-    _tableClients.forEach(function(c){ rxs += parseBytes(c.rx); txs += parseBytes(c.tx); });
-    document.getElementById('total-rx').textContent = fmtBytes(rxs);
-    document.getElementById('total-tx').textContent = fmtBytes(txs);
+    
+    // Суммарный трафик из шапки обновляется через API /api/clients (возвращает актуальные данные)
+    // Нам нужно запросить сервер для получения суммы, но мы уже получаем клиентов. 
+    // Оставим как есть, сервер сам пришлет актуальные цифры в HTML.
   } catch(e) {} finally { updating = false; }
 }
 setInterval(refresh, 5000);
@@ -799,18 +597,18 @@ def render_page(clients, message="", error=""):
         n = c["name"]
         rows.append(
             '<tr>'
-            f'<td><span class="client-name" data-name="{n}">{n}</span></td>'
+            f'<td><strong>{n}</strong></td>'
             f'<td>{c["ip"]}</td>'
             f'<td class="s-{cls}">{st}</td>'
             f'<td>{c.get("rx","0 B")}</td>'
             f'<td>{c.get("tx","0 B")}</td>'
-            f'<td>{c.get("handshake","never")}</td>'
+            f'<td>{c.get("handshake","никогда")}</td>'
             '<td>'
             f'<a href="/download/conf/{n}" class="btn">.conf</a>'
             f'<a href="/download/vpn/{n}" class="btn">vpn://</a>'
             f'<button type="button" class="btn qr-btn" data-name="{n}">QR</button>'
             f'<form method="post" action="/delete/{n}" onsubmit="return confirm(\'Delete client {n}?\')" style="display:inline">'
-            '<button type="submit" class="btn danger">Delete</button></form>'
+            '<button type="submit" class="btn danger">Удалить</button></form>'
             '</td></tr>'
         )
     if not rows:
@@ -883,29 +681,14 @@ async def api_clients(request: Request):
 @app.get("/api/check_update")
 async def api_check_update(request: Request):
     current_user(request)
-    # Запускаем блокирующий вызов urllib в отдельном потоке, чтобы не вешать сервер
     result = await run_in_threadpool(check_github_updates)
     return JSONResponse(result)
-
-@app.get("/api/traffic/status")
-async def api_traffic_status(request: Request):
-    current_user(request)
-    return {"enabled": is_traffic_enabled()}
-
-@app.post("/api/traffic/toggle")
-async def api_traffic_toggle(request: Request):
-    current_user(request)
-    os.makedirs(os.path.dirname(TRAFFIC_STATE_FILE), exist_ok=True)
-    new_state = not is_traffic_enabled()
-    with open(TRAFFIC_STATE_FILE, "w") as f:
-        f.write("1" if new_state else "0")
-    return {"enabled": new_state}
 
 @app.post("/api/update")
 async def api_update(request: Request):
     current_user(request)
     if not os.path.exists(UPDATE_SCRIPT):
-        raise HTTPException(500, "update script not found. Run deploy.sh --update once via SSH.")
+        raise HTTPException(500, "update script not found.")
     
     try:
         body = await request.json()
@@ -921,28 +704,13 @@ async def api_update(request: Request):
         subprocess.run([
             "systemd-run",
             "--collect",
-            "--unit=amnezia-update-" + str(int(__import__("time").time())),
+            "--unit=amnezia-update-" + str(int(time.time())),
             "--on-active=2s",
             UPDATE_SCRIPT,
         ], check=False, timeout=10)
         return {"status": "started"}
     except Exception as e:
         return JSONResponse({"status": "error", "detail": str(e)}, status_code=500)
-
-@app.get("/api/stats/{name}")
-async def api_stats(request: Request, name: str, period: str = "24h"):
-    current_user(request)
-    if period not in ("1h", "24h", "7d"):
-        period = "24h"
-    name_clean = re.sub(r"[^a-zA-Z0-9_-]", "", name)
-    return JSONResponse(traffic_series(name_clean, period))
-
-@app.get("/api/stats/total")
-async def api_stats_total(request: Request, period: str = "24h"):
-    current_user(request)
-    if period not in ("1h", "24h", "7d"):
-        period = "24h"
-    return JSONResponse(traffic_series("total", period))
 
 @app.post("/create")
 async def create_client(request: Request, name: str = Form(...)):

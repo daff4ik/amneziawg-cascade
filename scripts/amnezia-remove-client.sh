@@ -1,7 +1,7 @@
 #!/bin/bash
 # =====================================================================
 #  amnezia-remove-client.sh
-#  Удаляет конфиг клиента AmneziaWG: peer из awg1.conf, .conf и .vpn.txt.
+#  Удаляет клиента AmneziaWG: peer из awg1.conf, .conf, .vpn.txt и БД.
 # =====================================================================
 set -euo pipefail
 
@@ -9,13 +9,13 @@ AWG_DIR="/etc/amnezia/amneziawg"
 AWG_IFACE="awg1"
 CLIENTS_DIR="/root/clients"
 SERVER_CONF="$AWG_DIR/$AWG_IFACE.conf"
+DB="/var/lib/amnezia-panel/traffic.db"
 
 [[ $EUID -ne 0 ]] && { echo "Ошибка: запускать от root (sudo $0)"; exit 1; }
 [[ ! -f "$SERVER_CONF" ]] && { echo "Ошибка: файл $SERVER_CONF не найден"; exit 1; }
 
 CLIENT_NAME=""
 
-# === Выбор клиента: из аргумента или через меню ===
 if [[ $# -ge 1 ]]; then
     CLIENT_NAME="$1"
 else
@@ -66,7 +66,6 @@ esac
 echo ""
 echo "Удаляем клиента '$CLIENT_SAFE'..."
 
-# === 1. Удаление блока [Peer] через Python ===
 python3 - "$SERVER_CONF" "$CLIENT_SAFE" <<'PYEOF'
 import sys, re
 
@@ -83,15 +82,12 @@ with open(conf_path, 'w', encoding='utf-8') as f:
     f.write(new_content)
 PYEOF
 
-# === 2. Удаление файлов конфига и ссылки ===
 CLIENT_CONF="$CLIENTS_DIR/${CLIENT_SAFE}.conf"
 CLIENT_VPN="$CLIENTS_DIR/${CLIENT_SAFE}.vpn.txt"
 
 if [[ -f "$CLIENT_CONF" ]]; then
     rm -f "$CLIENT_CONF"
     echo "Файл конфига удалён: $CLIENT_CONF"
-else
-    echo "Файл конфига не найден: $CLIENT_CONF"
 fi
 
 if [[ -f "$CLIENT_VPN" ]]; then
@@ -99,7 +95,12 @@ if [[ -f "$CLIENT_VPN" ]]; then
     echo "Файл ссылки удалён: $CLIENT_VPN"
 fi
 
-# === 3. Перезапуск ===
+# Удаление статистики из БД
+if [[ -f "$DB" ]]; then
+    sqlite3 "$DB" "DELETE FROM client_stats WHERE name='$CLIENT_SAFE';" 2>/dev/null || true
+    echo "Статистика удалена из БД."
+fi
+
 systemctl restart "awg-quick@$AWG_IFACE"
 echo "Интерфейс $AWG_IFACE перезапущен."
 
