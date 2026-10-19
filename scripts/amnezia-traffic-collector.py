@@ -5,6 +5,17 @@ import sqlite3
 import subprocess
 import time
 
+# ===== Проверка состояния =====
+STATE_FILE = "/var/lib/amnezia-panel/traffic_enabled"
+os.makedirs("/var/lib/amnezia-panel", exist_ok=True)
+if os.path.exists(STATE_FILE):
+    try:
+        with open(STATE_FILE) as _f:
+            if _f.read().strip() == "0":
+                exit(0)  # сбор отключён
+    except Exception:
+        pass
+
 DB_DIR = "/var/lib/amnezia-panel"
 DB = f"{DB_DIR}/traffic.db"
 CONF = "/etc/amnezia/amneziawg/awg1.conf"

@@ -145,7 +145,9 @@ SCRIPTS_TO_DOWNLOAD=(
     amnezia-notify-setup.sh
     amnezia-healthcheck.sh
     amnezia-traffic-collector.py
+    amnezia-update.sh
 )
+
 for f in "${SCRIPTS_TO_DOWNLOAD[@]}"; do
     url="$REPO_URL/scripts/$f"
     echo "  ↓ $f"
@@ -482,6 +484,10 @@ say "Настройка cron"
 apt install -y -qq sqlite3 >/dev/null 2>&1 || true
 
 mkdir -p /var/lib/amnezia-panel
+# Файл-состояние: по умолчанию сбор трафика включён
+[[ -f /var/lib/amnezia-panel/traffic_enabled ]] || echo "1" > /var/lib/amnezia-panel/traffic_enabled
+
+rm -f /usr/local/bin/amnezia-traffic-collector.sh
 
 if [[ -x /usr/local/bin/amnezia-healthcheck.sh ]]; then
     cat > /etc/cron.d/amnezia-healthcheck <<'EOF'

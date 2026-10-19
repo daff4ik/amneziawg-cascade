@@ -25,6 +25,8 @@ REMOVE_SCRIPT = "/usr/local/bin/amnezia-remove-client.sh"
 NOTIFY_SCRIPT = "/usr/local/bin/amnezia-notify.sh"
 TRAFFIC_DB    = "/var/lib/amnezia-panel/traffic.db"
 SERVER_LABEL  = "__SERVER_LABEL__"
+TRAFFIC_STATE_FILE = "/var/lib/amnezia-panel/traffic_enabled"
+UPDATE_SCRIPT      = "/usr/local/bin/amnezia-update.sh"
 
 SESSION_COOKIE = "amnezia_session"
 SESSION_DAYS   = 7
@@ -60,6 +62,15 @@ def current_user(request: Request) -> str:
             raise HTTPException(401, "Unauthorized")
         raise RedirectToLogin()
     return u
+
+def is_traffic_enabled() -> bool:
+    if not os.path.exists(TRAFFIC_STATE_FILE):
+        return True  # по умолчанию включено
+    try:
+        with open(TRAFFIC_STATE_FILE) as f:
+            return f.read().strip() == "1"
+    except Exception:
+        return True
 
 # ================ Парсинг ================
 def parse_clients():
@@ -305,6 +316,8 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
       <div class="traffic-row"><span class="traffic-label">⬇ RX:</span><span class="traffic-value" id="total-rx">__TOTAL_RX__</span></div>
       <div class="traffic-row"><span class="traffic-label">⬆ TX:</span><span class="traffic-value" id="total-tx">__TOTAL_TX__</span></div>
     </div>
+    <button id="traffic-toggle-btn" class="btn ghost" title="Toggle traffic collection">&#128202; Track: ...</button>
+    <button id="update-btn" class="btn ghost" title="Update panel &amp; scripts">&#11014; Update</button>    
     <button id="restart-btn" class="btn ghost">🔄 Restart</button>
     <button id="theme-toggle" class="btn ghost">🌙</button>
     <a href="/logout" class="btn ghost">🚪 Logout</a>
@@ -370,8 +383,67 @@ var trafficChart = null;
       trafficChart.update();
     }
   });
+  // ===== Traffic toggle =====
+  var trafficEnabled = true;
+  async function loadTrafficStatus() {
+    try {
+      var r = await fetch('/api/traffic/status', {credentials: 'same-origin'});
+      if (r.ok) {
+        var d = await r.json();
+        trafficEnabled = d.enabled;
+        updateTrafficBtn();
+      }
+    } catch(e) {}
+  }
+  function updateTrafficBtn() {
+    var b = document.getElementById('traffic-toggle-btn');
+    if (!b) return;
+    b.textContent = trafficEnabled ? '\uD83D\uDCCA Track: ON' : '\uD83D\uDCCA Track: OFF';
+    b.style.opacity = trafficEnabled ? '1' : '0.6';
+  }
+  async function toggleTraffic() {
+    try {
+      var r = await fetch('/api/traffic/toggle', {credentials: 'same-origin', method: 'POST'});
+      if (r.status === 401) { location.href = '/login'; return; }
+      if (r.ok) {
+        var d = await r.json();
+        trafficEnabled = d.enabled;
+        updateTrafficBtn();
+      }
+    } catch(e) {}
+  }
+  var _tb = document.getElementById('traffic-toggle-btn');
+  if (_tb) {
+    _tb.addEventListener('click', toggleTraffic);
+    loadTrafficStatus();
+  }
 
-  document.getElementById('restart-btn').addEventListener('click', function(){
+  // ===== Update button =====
+  var _ub = document.getElementById('update-btn');
+  if (_ub) {
+    _ub.addEventListener('click', async function(){
+      if (!confirm('Обновить панель и скрипты?\n\nСтраница перезагрузится через ~20 секунд.\nКонфиги туннеля НЕ будут изменены.')) return;
+      this.disabled = true;
+      this.textContent = '\u23F3 Updating...';
+      try {
+        var r = await fetch('/api/update', {credentials: 'same-origin', method: 'POST'});
+        if (r.status === 401) { location.href = '/login'; return; }
+        if (r.ok) {
+          setTimeout(function(){ location.reload(); }, 20000);
+        } else {
+          alert('Update failed: HTTP ' + r.status);
+          this.disabled = false;
+          this.textContent = '\u2B06 Update';
+        }
+      } catch(e) {
+        alert('Error: ' + e);
+        this.disabled = false;
+        this.textContent = '\u2B06 Update';
+      }
+    });
+  }
+
+    document.getElementById('restart-btn').addEventListener('click', function(){
     if (!confirm('Restart awg0 and awg1?')) return;
     var f = document.createElement('form'); f.method='POST'; f.action='/restart';
     document.body.appendChild(f); f.submit();
@@ -640,6 +712,39 @@ async def index(request: Request, message: str = "", error: str = ""):
 async def api_clients(request: Request):
     current_user(request)
     return JSONResponse(enrich(parse_clients()))
+
+@app.get("/api/traffic/status")
+async def api_traffic_status(request: Request):
+    current_user(request)
+    return {"enabled": is_traffic_enabled()}
+
+@app.post("/api/traffic/toggle")
+async def api_traffic_toggle(request: Request):
+    current_user(request)
+    os.makedirs(os.path.dirname(TRAFFIC_STATE_FILE), exist_ok=True)
+    new_state = not is_traffic_enabled()
+    with open(TRAFFIC_STATE_FILE, "w") as f:
+        f.write("1" if new_state else "0")
+    return {"enabled": new_state}
+
+@app.post("/api/update")
+async def api_update(request: Request):
+    current_user(request)
+    if not os.path.exists(UPDATE_SCRIPT):
+        raise HTTPException(500, "update script not found. Run deploy.sh --update once via SSH.")
+    try:
+        # systemd-run создаёт отдельный transient unit, который переживёт
+        # перезапуск amnezia-panel
+        subprocess.run([
+            "systemd-run",
+            "--collect",
+            "--unit=amnezia-update-" + str(int(__import__("time").time())),
+            "--on-active=2s",
+            UPDATE_SCRIPT,
+        ], check=False, timeout=10)
+        return {"status": "started"}
+    except Exception as e:
+        return JSONResponse({"status": "error", "detail": str(e)}, status_code=500)
 
 @app.get("/api/stats/{name}")
 async def api_stats(request: Request, name: str, period: str = "24h"):
