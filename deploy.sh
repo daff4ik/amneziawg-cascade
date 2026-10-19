@@ -1,20 +1,31 @@
 #!/bin/bash
 # =====================================================================
 #  AmneziaWG Cascade Deploy
-#  Автоматическое развёртывание каскадного VPN между двумя серверами.
 #  Запускать на SERVER-A (входном) от root.
 #
-#  Перед публикацией на GitHub отредактируйте REPO_URL ниже.
+#  Использование:
+#    ./deploy.sh              # полная установка
+#    ./deploy.sh --update     # обновить скрипты/панель без трогания конфигов
 # =====================================================================
 set -euo pipefail
 
-# =====================================================================
-#  НАСТРОЙКА: замените на URL вашего репозитория
-# =====================================================================
-REPO_URL="https://raw.githubusercontent.com/davideprikyan/amneziawg-cascade/main"
-# Пример: https://raw.githubusercontent.com/username/amneziawg-cascade/main
+# ==================== Парсинг аргументов ====================
+UPDATE_MODE=0
+for arg in "$@"; do
+    case "$arg" in
+        --update) UPDATE_MODE=1 ;;
+        --help|-h)
+            echo "Использование:"
+            echo "  $0              # полная установка"
+            echo "  $0 --update     # обновить скрипты и панель без пересоздания конфигов"
+            exit 0
+            ;;
+    esac
+done
 
 # ==================== Константы ====================
+REPO_URL="https://raw.githubusercontent.com/davideprikyan/amneziawg-cascade/main"
+
 AWG_DIR="/etc/amnezia/amneziawg"
 AWG_TUNNEL_PORT="8443"
 AWG_CLIENT_PORT="585"
@@ -29,50 +40,85 @@ CLIENT_MTU="1280"
 CLIENT_DNS="1.1.1.1, 1.0.0.1"
 
 # ==================== Хелперы ====================
-say() { echo -e "\n\033[1;36m=== $* ===\033[0m"; }
-ok()  { echo -e "\033[1;32m[OK]\033[0m $*"; }
-warn(){ echo -e "\033[1;33m[WARN]\033[0m $*"; }
-err() { echo -e "\033[1;31m[ERR]\033[0m $*" >&  2; }
+say()  { echo -e "\n\033[1;36m=== $* ===\033[0m"; }
+ok()   { echo -e "\033[1;32m[OK]\033[0m $*"; }
+warn() { echo -e "\033[1;33m[WARN]\033[0m $*"; }
+err()  { echo -e "\033[1;31m[ERR]\033[0m $*" >&2; }
 
-# =====================================================================
-#  Проверка REPO_URL
-# =====================================================================
 if [[ "$REPO_URL" == *"CHANGE_ME"* ]]; then
     err "Отредактируйте REPO_URL в начале deploy.sh!"
-    err "Текущее значение: $REPO_URL"
-    err "Укажите ваш репозиторий, например:"
-    err "  https://raw.githubusercontent.com/username/amneziawg-cascade/main"
     exit 1
 fi
 
 # =====================================================================
-#  Интерактивный ввод
+#  Интерактивный ввод / чтение существующих параметров
 # =====================================================================
 say "Ввод параметров"
 
-read -p "IP-адрес этого сервера (SERVER-A): " RU_IP
-[[ -z "$RU_IP" ]] && { err "IP обязателен"; exit 1; }
+if [[ $UPDATE_MODE -eq 1 ]]; then
+    if [[ ! -f "$AWG_DIR/awg0.conf" ]]; then
+        err "Нет $AWG_DIR/awg0.conf — нечего обновлять. Запустите полную установку."
+        exit 1
+    fi
+    say "Режим обновления: конфиги awg0/awg1 НЕ будут изменены"
 
-read -p "IP-адрес второго сервера (SERVER-B): " DE_IP
-[[ -z "$DE_IP" ]] && { err "IP обязателен"; exit 1; }
+    # IP второго сервера из awg0.conf
+    DE_IP=$(grep -oP 'Endpoint\s*=\s*\K[0-9.]+' "$AWG_DIR/awg0.conf" | head -1 || true)
+    [[ -z "$DE_IP" ]] && { err "Не удалось определить IP SERVER-B из awg0.conf"; exit 1; }
 
-read -p "SSH-порт SERVER-B [22]: " DE_SSH_PORT
-DE_SSH_PORT="${DE_SSH_PORT:-22}"
+    # IP этого сервера
+    RU_IP=$(hostname -I | awk '{print $1}')
+    [[ -z "$RU_IP" ]] && { err "Не удалось определить IP этого сервера"; exit 1; }
 
-read -p "SSH-пользователь SERVER-B [root]: " DE_SSH_USER
-DE_SSH_USER="${DE_SSH_USER:-root}"
+    # SERVER_NAME — из существующей панели, если есть
+    if [[ -f /opt/amnezia-panel.py ]]; then
+        SERVER_NAME=$(grep -oP 'SERVER_LABEL\s*=\s*"\K[^"]+' /opt/amnezia-panel.py | head -1 || echo "AmneziaVPN")
+    else
+        SERVER_NAME="AmneziaVPN"
+    fi
 
-read -r -s -p "SSH-пароль SERVER-B: " DE_PASS; echo
-[[ -z "$DE_PASS" ]] && { err "Пароль обязателен"; exit 1; }
+    read -p "SSH-порт SERVER-B [$DE_IP] [22]: " DE_SSH_PORT
+    DE_SSH_PORT="${DE_SSH_PORT:-22}"
+    read -p "SSH-пользователь SERVER-B [root]: " DE_SSH_USER
+    DE_SSH_USER="${DE_SSH_USER:-root}"
+    read -r -s -p "SSH-пароль SERVER-B: " DE_PASS; echo
+    [[ -z "$DE_PASS" ]] && { err "Пароль обязателен"; exit 1; }
 
-read -p "Название сервера для AmneziaVPN (например, 'MyVPN'): " SERVER_NAME
-SERVER_NAME="${SERVER_NAME:-AmneziaVPN}"
+    if [[ -f /etc/amnezia-panel.conf ]]; then
+        read -p "Веб-панель уже установлена. Обновить её? (y/n) [y]: " INSTALL_PANEL
+        INSTALL_PANEL="${INSTALL_PANEL:-y}"
+    else
+        read -p "Установить веб-панель? (y/n) [y]: " INSTALL_PANEL
+        INSTALL_PANEL="${INSTALL_PANEL:-y}"
+    fi
 
-read -p "Установить веб-панель? (y/n) [n]: " INSTALL_PANEL
-INSTALL_PANEL="${INSTALL_PANEL:-n}"
+    ok "Параметры для обновления получены"
+else
+    # --- Полная установка: единственный набор промптов ---
+    read -p "IP-адрес этого сервера (SERVER-A): " RU_IP
+    [[ -z "$RU_IP" ]] && { err "IP обязателен"; exit 1; }
+
+    read -p "IP-адрес второго сервера (SERVER-B): " DE_IP
+    [[ -z "$DE_IP" ]] && { err "IP обязателен"; exit 1; }
+
+    read -p "SSH-порт SERVER-B [22]: " DE_SSH_PORT
+    DE_SSH_PORT="${DE_SSH_PORT:-22}"
+
+    read -p "SSH-пользователь SERVER-B [root]: " DE_SSH_USER
+    DE_SSH_USER="${DE_SSH_USER:-root}"
+
+    read -r -s -p "SSH-пароль SERVER-B: " DE_PASS; echo
+    [[ -z "$DE_PASS" ]] && { err "Пароль обязателен"; exit 1; }
+
+    read -p "Название сервера для AmneziaVPN (например, 'MyVPN'): " SERVER_NAME
+    SERVER_NAME="${SERVER_NAME:-AmneziaVPN}"
+
+    read -p "Установить веб-панель? (y/n) [n]: " INSTALL_PANEL
+    INSTALL_PANEL="${INSTALL_PANEL:-n}"
+fi
 
 # =====================================================================
-#  Проверки
+#  Проверки окружения
 # =====================================================================
 say "Проверка окружения"
 [[ $EUID -ne 0 ]] && { err "Запускать от root"; exit 1; }
@@ -88,20 +134,29 @@ if [[ "$HOST_IPS" != *"$RU_IP"* ]]; then
 fi
 
 # =====================================================================
-#  Скачивание helper-скриптов из репозитория
+#  Скачивание helper-скриптов
 # =====================================================================
 say "Скачивание helper-скриптов из репозитория"
-for f in amnezia-add-client.sh amnezia-remove-client.sh amnezia-list-clients.sh; do
+SCRIPTS_TO_DOWNLOAD=(
+    amnezia-add-client.sh
+    amnezia-remove-client.sh
+    amnezia-list-clients.sh
+    amnezia-notify.sh
+    amnezia-notify-setup.sh
+    amnezia-healthcheck.sh
+    amnezia-traffic-collector.sh
+)
+for f in "${SCRIPTS_TO_DOWNLOAD[@]}"; do
     url="$REPO_URL/scripts/$f"
     echo "  ↓ $f"
     if ! curl -fsSL "$url" -o "/tmp/$f"; then
-        err "Не удалось скачать $url"
-        err "Проверьте REPO_URL и доступность репозитория."
-        exit 1
+        warn "Не удалось скачать $url — пропускаю"
+        rm -f "/tmp/$f"
+        continue
     fi
     chmod +x "/tmp/$f"
 done
-ok "Все скрипты скачаны"
+ok "Скрипты скачаны"
 
 # =====================================================================
 #  SSH к SERVER-B
@@ -124,7 +179,7 @@ run_de "echo SSH_OK" | grep -q SSH_OK || { err "SSH до $DE_IP не работ�
 ok "SSH работает"
 
 # =====================================================================
-#  Установка AmneziaWG на оба сервера !
+#  Установка AmneziaWG (idempotent, в обоих режимах)
 # =====================================================================
 install_awg() {
     local target="$1"
@@ -135,7 +190,7 @@ systemctl stop unattended-upgrades apt-daily.timer apt-daily-upgrade.timer 2>/de
 systemctl disable unattended-upgrades apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
 apt update -qq
 apt install -y -qq software-properties-common python3-launchpadlib gnupg2 \
-    linux-headers-$(uname -r) build-essential dkms iptables qrencode
+    linux-headers-$(uname -r) build-essential dkms iptables qrencode sqlite3
 if ! command -v awg >/dev/null; then
     add-apt-repository -y ppa:amnezia/ppa
     apt update -qq
@@ -155,19 +210,22 @@ REMOTE_EOF
     fi
 }
 
-say "Установка AmneziaWG на SERVER-A (этот сервер)"
+say "Установка AmneziaWG на SERVER-A"
 install_awg local
 
 say "Установка AmneziaWG на SERVER-B ($DE_IP)"
 install_awg remote
 
 # =====================================================================
-#  Генерация параметров обфускации (уникальные, генерируются заново)
+#  ТОЛЬКО ДЛЯ ПОЛНОЙ УСТАНОВКИ: туннели и ключи
 # =====================================================================
-say "Генерация параметров обфускации"
+if [[ $UPDATE_MODE -eq 0 ]]; then
 
-gen_ranges() {
-    python3 - <<'PY'
+    # ---------- Генерация параметров обфускации ----------
+    say "Генерация параметров обфускации"
+
+    gen_ranges() {
+        python3 - <<'PY'
 import random
 ranges = []
 while len(ranges) < 4:
@@ -178,74 +236,63 @@ while len(ranges) < 4:
         ranges.append((start, end))
 print(" ".join(f"{s}-{e}" for s, e in ranges))
 PY
-}
+    }
 
-gen_s_pair() {
-    while :; do
-        local a=$((RANDOM % 50 + 12))
-        local b=$((RANDOM % 50 + 12))
-        [[ $((a + 56)) -ne $b ]] && { echo "$a $b"; return; }
-    done
-}
+    gen_s_pair() {
+        while :; do
+            local a=$((RANDOM % 50 + 12))
+            local b=$((RANDOM % 50 + 12))
+            [[ $((a + 56)) -ne $b ]] && { echo "$a $b"; return; }
+        done
+    }
 
-# Параметры для awg0
-HEADER_PROTECTION_KEY=$(awg genkey)
-Jc=$((RANDOM % 6 + 3))
-JMIN=$((RANDOM % 40 + 10))
-JMAX=$((JMIN + RANDOM % 40 + 20))
-read S1 S2 <<< "$(gen_s_pair)"
-S3=$((RANDOM % 50 + 12))
-S4=$((RANDOM % 50 + 12))
-read H1 H2 H3 H4 <<< "$(gen_ranges)"
+    HEADER_PROTECTION_KEY=$(awg genkey)
+    Jc=$((RANDOM % 6 + 3))
+    JMIN=$((RANDOM % 40 + 10))
+    JMAX=$((JMIN + RANDOM % 40 + 20))
+    read S1 S2 <<< "$(gen_s_pair)"
+    S3=$((RANDOM % 50 + 12))
+    S4=$((RANDOM % 50 + 12))
+    read H1 H2 H3 H4 <<< "$(gen_ranges)"
 
-# Параметры для awg1 (клиентские, независимые)
-HEADER_PROTECTION_KEY_C=$(awg genkey)
-Jc_C=$((RANDOM % 6 + 3))
-JMIN_C=$((RANDOM % 40 + 10))
-JMAX_C=$((JMIN_C + RANDOM % 40 + 20))
-read S1_C S2_C <<< "$(gen_s_pair)"
-S3_C=$((RANDOM % 50 + 12))
-S4_C=$((RANDOM % 50 + 12))
-read H1_C H2_C H3_C H4_C <<< "$(gen_ranges)"
+    HEADER_PROTECTION_KEY_C=$(awg genkey)
+    Jc_C=$((RANDOM % 6 + 3))
+    JMIN_C=$((RANDOM % 40 + 10))
+    JMAX_C=$((JMIN_C + RANDOM % 40 + 20))
+    read S1_C S2_C <<< "$(gen_s_pair)"
+    S3_C=$((RANDOM % 50 + 12))
+    S4_C=$((RANDOM % 50 + 12))
+    read H1_C H2_C H3_C H4_C <<< "$(gen_ranges)"
 
-ok "Параметры сгенерированы"
+    ok "Параметры сгенерированы"
 
-# =====================================================================
-#  Генерация ключей awg0 на двух серверах
-# =====================================================================
-say "Генерация ключей межсерверного туннеля"
+    # ---------- Генерация ключей awg0 ----------
+    say "Генерация ключей межсерверного туннеля"
 
-mkdir -p "$AWG_DIR" && chmod 700 "$AWG_DIR"
-cd "$AWG_DIR"
-if [[ ! -f private.key ]]; then
-    umask 077
-    awg genkey > private.key
-    awg pubkey < private.key > public.key
-    chmod 600 private.key
-    chmod 644 public.key
-fi
-RU_PRIV=$(cat private.key)
-RU_PUB=$(cat public.key)
+    mkdir -p "$AWG_DIR" && chmod 700 "$AWG_DIR"
+    cd "$AWG_DIR"
+    if [[ ! -f private.key ]]; then
+        umask 077
+        awg genkey > private.key
+        awg pubkey < private.key > public.key
+        chmod 600 private.key
+        chmod 644 public.key
+    fi
+    RU_PRIV=$(cat private.key)
+    RU_PUB=$(cat public.key)
 
-run_de "mkdir -p $AWG_DIR && chmod 700 $AWG_DIR && cd $AWG_DIR && \
-    if [ ! -f private.key ]; then umask 077; awg genkey > private.key; awg pubkey < private.key > public.key; chmod 600 private.key; chmod 644 public.key; fi"
-DE_PRIV=$(run_de "cat $AWG_DIR/private.key")
-DE_PUB=$(run_de "cat $AWG_DIR/public.key")
+    run_de "mkdir -p $AWG_DIR && chmod 700 $AWG_DIR && cd $AWG_DIR && \
+        if [ ! -f private.key ]; then umask 077; awg genkey > private.key; awg pubkey < private.key > public.key; chmod 600 private.key; chmod 644 public.key; fi"
+    DE_PRIV=$(run_de "cat $AWG_DIR/private.key")
+    DE_PUB=$(run_de "cat $AWG_DIR/public.key")
 
-# =====================================================================
-#  Определение внешнего интерфейса на SERVER-B
-# =====================================================================
-DE_IFACE=$(run_de "ip route get 8.8.8.8 | awk '{print \$5}' | head -1")
-[[ -z "$DE_IFACE" ]] && { err "Не удалось определить внешний интерфейс SERVER-B"; exit 1; }
-ok "Внешний интерфейс SERVER-B: $DE_IFACE"
+    DE_IFACE=$(run_de "ip route get 8.8.8.8 | awk '{print \$5}' | head -1")
+    [[ -z "$DE_IFACE" ]] && { err "Не удалось определить внешний интерфейс SERVER-B"; exit 1; }
+    ok "Внешний интерфейс SERVER-B: $DE_IFACE"
 
-# =====================================================================
-#  Запись awg0.conf
-# =====================================================================
-say "Настройка туннеля awg0"
-
-# --- SERVER-A ---
-cat > "$AWG_DIR/awg0.conf" <<EOF
+    # ---------- awg0.conf: SERVER-A ----------
+    say "Настройка туннеля awg0"
+    cat > "$AWG_DIR/awg0.conf" <<EOF
 [Interface]
 PrivateKey = $RU_PRIV
 Address = $TUNNEL_A_IP/32
@@ -294,10 +341,10 @@ Endpoint = $DE_IP:$AWG_TUNNEL_PORT
 AllowedIPs = 0.0.0.0/0
 PersistentKeepalive = 25
 EOF
-chmod 600 "$AWG_DIR/awg0.conf"
+    chmod 600 "$AWG_DIR/awg0.conf"
 
-# --- SERVER-B ---
-cat > /tmp/awg0-de.conf <<EOF
+    # ---------- awg0.conf: SERVER-B ----------
+    cat > /tmp/awg0-de.conf <<EOF
 [Interface]
 PrivateKey = $DE_PRIV
 Address = $TUNNEL_B_IP/32
@@ -338,46 +385,42 @@ PublicKey = $RU_PUB
 AllowedIPs = $TUNNEL_A_IP/32
 EOF
 
-scp_de /tmp/awg0-de.conf "$AWG_DIR/awg0.conf"
-run_de "chmod 600 $AWG_DIR/awg0.conf"
-rm -f /tmp/awg0-de.conf
-ok "Конфиги awg0 записаны"
+    scp_de /tmp/awg0-de.conf "$AWG_DIR/awg0.conf"
+    run_de "chmod 600 $AWG_DIR/awg0.conf"
+    rm -f /tmp/awg0-de.conf
+    ok "Конфиги awg0 записаны"
 
-# =====================================================================
-#  Запуск awg0
-# =====================================================================
-say "Запуск межсерверного туннеля"
-run_de "systemctl enable awg-quick@awg0 && systemctl restart awg-quick@awg0"
-sleep 2
-systemctl enable awg-quick@awg0
-systemctl restart awg-quick@awg0
-sleep 3
+    # ---------- Запуск awg0 ----------
+    say "Запуск межсерверного туннеля"
+    run_de "systemctl enable awg-quick@awg0 && systemctl restart awg-quick@awg0"
+    sleep 2
+    systemctl enable awg-quick@awg0
+    systemctl restart awg-quick@awg0
+    sleep 3
 
-if ping -c 3 -W 3 "$TUNNEL_B_IP" >/dev/null 2>&1; then
-    ok "Туннель awg0 работает"
-else
-    err "Пинг до $TUNNEL_B_IP не идёт"
-    warn "Диагностика:"
-    warn "  SERVER-A: sudo journalctl -xeu awg-quick@awg0 -n 30"
-    warn "  SERVER-B: sudo journalctl -xeu awg-quick@awg0 -n 30"
-    exit 1
-fi
+    if ping -c 3 -W 3 "$TUNNEL_B_IP" >/dev/null 2>&1; then
+        ok "Туннель awg0 работает"
+    else
+        err "Пинг до $TUNNEL_B_IP не идёт"
+        warn "Диагностика:"
+        warn "  SERVER-A: sudo journalctl -xeu awg-quick@awg0 -n 30"
+        warn "  SERVER-B: sudo journalctl -xeu awg-quick@awg0 -n 30"
+        exit 1
+    fi
 
-# =====================================================================
-#  Клиентский интерфейс awg1
-# =====================================================================
-say "Настройка клиентского интерфейса awg1"
+    # ---------- Клиентский интерфейс awg1 ----------
+    say "Настройка клиентского интерфейса awg1"
 
-if [[ ! -f "$AWG_DIR/awg1_private.key" ]]; then
-    umask 077
-    awg genkey > "$AWG_DIR/awg1_private.key"
-    awg pubkey < "$AWG_DIR/awg1_private.key" > "$AWG_DIR/awg1_public.key"
-    chmod 600 "$AWG_DIR/awg1_private.key"
-    chmod 644 "$AWG_DIR/awg1_public.key"
-fi
-AWG1_PRIV=$(cat "$AWG_DIR/awg1_private.key")
+    if [[ ! -f "$AWG_DIR/awg1_private.key" ]]; then
+        umask 077
+        awg genkey > "$AWG_DIR/awg1_private.key"
+        awg pubkey < "$AWG_DIR/awg1_private.key" > "$AWG_DIR/awg1_public.key"
+        chmod 600 "$AWG_DIR/awg1_private.key"
+        chmod 644 "$AWG_DIR/awg1_public.key"
+    fi
+    AWG1_PRIV=$(cat "$AWG_DIR/awg1_private.key")
 
-cat > "$AWG_DIR/awg1.conf" <<EOF
+    cat > "$AWG_DIR/awg1.conf" <<EOF
 [Interface]
 PrivateKey = $AWG1_PRIV
 Address = $CLIENT_SERVER_IP/24
@@ -404,21 +447,23 @@ MaxHandshakeAttempts = 15-20
 RandomTrailers = on
 DisableCookies = on
 EOF
-chmod 600 "$AWG_DIR/awg1.conf"
+    chmod 600 "$AWG_DIR/awg1.conf"
 
-systemctl enable awg-quick@awg1
-systemctl restart awg-quick@awg1
-sleep 2
-ok "awg1 поднят (MTU=$(ip -o link show awg1 2>/dev/null | grep -oP 'mtu \K[0-9]+' || echo '?'))"
+    systemctl enable awg-quick@awg1
+    systemctl restart awg-quick@awg1
+    sleep 2
+    ok "awg1 поднят (MTU=$(ip -o link show awg1 2>/dev/null | grep -oP 'mtu \K[0-9]+' || echo '?'))"
+
+fi  # <-- КОНЕЦ блока "полная установка"
 
 # =====================================================================
-#  Установка helper-скриптов
+#  Установка helper-скриптов (всегда)
 # =====================================================================
 say "Установка helper-скриптов"
 mkdir -p /root/clients && chmod 700 /root/clients
 mkdir -p /usr/local/bin
 
-for script in amnezia-add-client.sh amnezia-remove-client.sh amnezia-list-clients.sh; do
+for script in "${SCRIPTS_TO_DOWNLOAD[@]}"; do
     if [[ -f "/tmp/$script" ]]; then
         sed -e "s|__SERVER_ENDPOINT__|$RU_IP:$AWG_CLIENT_PORT|g" \
             -e "s|__SERVER_NAME__|$SERVER_NAME|g" \
@@ -428,81 +473,118 @@ for script in amnezia-add-client.sh amnezia-remove-client.sh amnezia-list-client
         chmod +x "/usr/local/bin/$script"
     fi
 done
-ok "Скрипты установлены: amnezia-add-client.sh, amnezia-remove-client.sh, amnezia-list-clients.sh"
+ok "Скрипты установлены в /usr/local/bin/"
 
 # =====================================================================
-#  Первый клиент admin
+#  Установка cron (healthcheck + traffic collector)
 # =====================================================================
-say "Создание первого клиента (admin)"
-if [[ ! -f /root/clients/admin.conf ]] && [[ -x /usr/local/bin/amnezia-add-client.sh ]]; then
-    echo "n" | /usr/local/bin/amnezia-add-client.sh admin || warn "admin уже существует или создан"
-    echo ""
-    echo "Для генерации vpn:// ссылки для admin выполните:"
-    echo "  sudo amnezia-add-client.sh admin"
-    echo "  (ответьте 'y' на вопрос про конвертацию)"
-else
-    ok "Клиент admin уже существует"
+say "Настройка cron"
+apt install -y -qq sqlite3 >/dev/null 2>&1 || true
+
+mkdir -p /var/lib/amnezia-panel
+
+if [[ -x /usr/local/bin/amnezia-healthcheck.sh ]]; then
+    cat > /etc/cron.d/amnezia-healthcheck <<'EOF'
+# Проверка туннеля awg0 раз в час
+0 * * * * root /usr/local/bin/amnezia-healthcheck.sh
+EOF
+    chmod 644 /etc/cron.d/amnezia-healthcheck
+    ok "cron: healthcheck (каждый час)"
+fi
+
+if [[ -x /usr/local/bin/amnezia-traffic-collector.sh ]]; then
+    cat > /etc/cron.d/amnezia-traffic <<'EOF'
+# Сбор статистики трафика клиентов каждые 5 минут
+*/5 * * * * root /usr/local/bin/amnezia-traffic-collector.sh
+EOF
+    chmod 644 /etc/cron.d/amnezia-traffic
+    # Первый прогон руками (чтобы БД сразу инициализировалась)
+    /usr/local/bin/amnezia-traffic-collector.sh 2>/dev/null || true
+    ok "cron: traffic collector (каждые 5 минут)"
 fi
 
 # =====================================================================
-#  Веб-панель (опционально)
+#  Первый клиент admin (только при полной установке)
+# =====================================================================
+if [[ $UPDATE_MODE -eq 0 ]]; then
+    say "Создание первого клиента (admin)"
+    if [[ ! -f /root/clients/admin.conf ]] && [[ -x /usr/local/bin/amnezia-add-client.sh ]]; then
+        echo "n" | /usr/local/bin/amnezia-add-client.sh admin || warn "admin уже существует или создан"
+        echo ""
+        echo "Для генерации vpn:// ссылки для admin выполните:"
+        echo "  sudo amnezia-add-client.sh admin"
+        echo "  (ответьте 'y' на вопрос про конвертацию)"
+    else
+        ok "Клиент admin уже существует"
+    fi
+fi
+
+# =====================================================================
+#  Веб-панель (всегда, если пользователь согласился)
 # =====================================================================
 if [[ "$INSTALL_PANEL" =~ ^[yYдД] ]]; then
     say "Установка веб-панели"
 
-    echo ""
-    echo "Выберите способ создания учётных данных для панели:"
-    echo "  1) Сгенерировать автоматически (рекомендуется)"
-    echo "  2) Указать свой логин и пароль"
-    echo ""
-    read -p "Ваш выбор [1]: " AUTH_CHOICE
-    AUTH_CHOICE="${AUTH_CHOICE:-1}"
+    # Определяем AUTH_CHOICE
+    if [[ $UPDATE_MODE -eq 1 && -f /etc/amnezia-panel.conf ]]; then
+        # В режиме обновления сохраняем существующие креды
+        PANEL_USER=$(grep -oP '^username=\K.*' /etc/amnezia-panel.conf || echo admin)
+        PANEL_PASS=$(grep -oP '^password=\K.*' /etc/amnezia-panel.conf || echo "")
+        AUTH_CHOICE="keep"
+        ok "Учётные данные панели сохраняются"
+    else
+        echo ""
+        echo "Выберите способ создания учётных данных для панели:"
+        echo "  1) Сгенерировать автоматически (рекомендуется)"
+        echo "  2) Указать свой логин и пароль"
+        echo ""
+        read -p "Ваш выбор [1]: " AUTH_CHOICE
+        AUTH_CHOICE="${AUTH_CHOICE:-1}"
 
-    case "$AUTH_CHOICE" in
-        2)
-            read -p "Логин: " PANEL_USER
-            [[ -z "$PANEL_USER" ]] && { err "Логин не может быть пустым"; exit 1; }
+        case "$AUTH_CHOICE" in
+            2)
+                read -p "Логин: " PANEL_USER
+                [[ -z "$PANEL_USER" ]] && { err "Логин не может быть пустым"; exit 1; }
 
-            while :; do
-                read -r -s -p "Пароль (мин. 8 символов): " PANEL_PASS; echo
-                [[ ${#PANEL_PASS} -lt 8 ]] && { warn "Пароль слишком короткий, попробуйте снова"; continue; }
-
-                read -r -s -p "Повторите пароль: " PANEL_PASS2; echo
-                [[ "$PANEL_PASS" != "$PANEL_PASS2" ]] && { warn "Пароли не совпадают, попробуйте снова"; continue; }
-                break
-            done
-            ok "Учётные данные приняты"
-            ;;
-        *)
-            PANEL_USER="admin"
-            PANEL_PASS=$(openssl rand -base64 24 | tr -d '/+=' | head -c 24)
-            ok "Учётные данные сгенерированы автоматически"
-            ;;
-    esac
+                while :; do
+                    read -r -s -p "Пароль (мин. 8 символов): " PANEL_PASS; echo
+                    [[ ${#PANEL_PASS} -lt 8 ]] && { warn "Пароль слишком короткий, попробуйте снова"; continue; }
+                    read -r -s -p "Повторите пароль: " PANEL_PASS2; echo
+                    [[ "$PANEL_PASS" != "$PANEL_PASS2" ]] && { warn "Пароли не совпадают, попробуйте снова"; continue; }
+                    break
+                done
+                ok "Учётные данные приняты"
+                ;;
+            *)
+                PANEL_USER="admin"
+                PANEL_PASS=$(openssl rand -base64 24 | tr -d '/+=' | head -c 24)
+                ok "Учётные данные сгенерированы автоматически"
+                ;;
+        esac
+    fi
 
     echo "  ↓ Скачивание amnezia-panel.py"
     curl -fsSL "$REPO_URL/web-panel/amnezia-panel.py" -o /tmp/amnezia-panel.py || { err "Не удалось скачать amnezia-panel.py"; exit 1; }
     echo "  ↓ Скачивание amnezia-panel.service"
     curl -fsSL "$REPO_URL/web-panel/amnezia-panel.service" -o /tmp/amnezia-panel.service || { err "Не удалось скачать amnezia-panel.service"; exit 1; }
 
-    # Установка Python venv
     apt install -y -qq python3-venv
     python3 -m venv /opt/amnezia-panel-venv
     /opt/amnezia-panel-venv/bin/pip install --quiet --upgrade pip
     /opt/amnezia-panel-venv/bin/pip install --quiet fastapi 'uvicorn[standard]' python-multipart qrcode
 
-    # Подстановка label
     sed "s|__SERVER_LABEL__|$SERVER_NAME|g" /tmp/amnezia-panel.py > /opt/amnezia-panel.py
     chmod 700 /opt/amnezia-panel.py
 
-    # Логин/пароль — берём из выбора выше
-    cat > /etc/amnezia-panel.conf <<EOF
+    # Записываем креды (только если не "keep")
+    if [[ "$AUTH_CHOICE" != "keep" ]]; then
+        cat > /etc/amnezia-panel.conf <<EOF
 username=$PANEL_USER
 password=$PANEL_PASS
 EOF
-    chmod 600 /etc/amnezia-panel.conf
+        chmod 600 /etc/amnezia-panel.conf
+    fi
 
-    # Self-signed SSL
     mkdir -p /etc/amnezia-panel-ssl
     if [[ ! -f /etc/amnezia-panel-ssl/cert.pem ]]; then
         openssl req -x509 -newkey rsa:4096 \
@@ -512,7 +594,6 @@ EOF
         chmod 600 /etc/amnezia-panel-ssl/*.pem
     fi
 
-    # Service
     cp /tmp/amnezia-panel.service /etc/systemd/system/amnezia-panel.service
     systemctl daemon-reload
     systemctl enable amnezia-panel
@@ -529,12 +610,13 @@ EOF
         echo "  Логин:    $PANEL_USER"
         if [[ "$AUTH_CHOICE" == "2" ]]; then
             echo "  Пароль:   (задан вами при установке)"
+        elif [[ "$AUTH_CHOICE" == "keep" ]]; then
+            echo "  Пароль:   (не изменён, см. /etc/amnezia-panel.conf)"
         else
             echo "  Пароль:   $PANEL_PASS"
             echo ""
             echo "  СОХРАНИТЕ ПАРОЛЬ! Больше он не будет показан."
         fi
-        echo "  (учётные данные записаны в /etc/amnezia-panel.conf)"
         echo "=============================================="
     else
         err "Веб-панель не запустилась"
@@ -548,7 +630,13 @@ fi
 #  Итоговая сводка
 # =====================================================================
 say "ГОТОВО"
-cat <<EOM
+if [[ $UPDATE_MODE -eq 1 ]]; then
+    echo "Режим обновления завершён."
+    echo "Конфиги awg0/awg1 и клиенты не изменены."
+    echo ""
+    echo "Обновлены: helper-скрипты, cron, панель (если выбрано)."
+else
+    cat <<EOM
 
 Каскадный VPN развёрнут.
 
@@ -563,6 +651,7 @@ cat <<EOM
   Добавить клиента:    sudo amnezia-add-client.sh <имя>
   Удалить клиента:     sudo amnezia-remove-client.sh <имя>
   Список клиентов:     sudo amnezia-list-clients.sh
+  Настроить Telegram:  sudo amnezia-notify-setup.sh
 
 Конфиги клиентов:      /root/clients/<имя>.conf
 vpn:// ссылки:         /root/clients/<имя>.vpn.txt
@@ -571,10 +660,12 @@ vpn:// ссылки:         /root/clients/<имя>.vpn.txt
 
   Статус туннеля:      sudo awg show
   Проверить связь:     ping -c 3 $TUNNEL_B_IP
-  Логи awg0:           sudo journalctl -xeu awg-quick@awg0 -n 30
-  Логи awg1:           sudo journalctl -xeu awg-quick@awg1 -n 30
+  Healthcheck вручную: sudo amnezia-healthcheck.sh
+  Собрать трафик:      sudo amnezia-traffic-collector.sh
+  БД трафика:          /var/lib/amnezia-panel/traffic.db
 
 EOM
+fi
 
 if [[ "$INSTALL_PANEL" =~ ^[yYдД] ]]; then
     echo "Веб-панель:          https://$RU_IP:8000"
