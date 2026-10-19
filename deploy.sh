@@ -635,6 +635,22 @@ fi
 # =====================================================================
 #  Итоговая сводка
 # =====================================================================
+
+# =====================================================================
+#  Сохранение текущего коммита для проверки обновлений
+# =====================================================================
+if [[ "$INSTALL_PANEL" =~ ^[yYдД] ]]; then
+    echo "  ↓ Сохранение текущей версии репозитория"
+    LATEST_SHA=$(curl -s "https://api.github.com/repos/davideprikyan/amneziawg-cascade/commits/main" | grep -oP '"sha":\s*"\K[^"]+' | head -1)
+    if [[ -n "$LATEST_SHA" ]]; then
+        mkdir -p /var/lib/amnezia-panel
+        echo "$LATEST_SHA" > /var/lib/amnezia-panel/installed_commit
+        ok "Версия сохранена: $LATEST_SHA"
+    else
+        warn "Не удалось получить SHA с GitHub (проверьте доступность api.github.com)"
+    fi
+fi
+
 say "ГОТОВО"
 if [[ $UPDATE_MODE -eq 1 ]]; then
     echo "Режим обновления завершён."
