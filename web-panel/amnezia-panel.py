@@ -353,6 +353,12 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
   .update-date{color:var(--muted);font-size:0.85em}
   .ssh-warn{color:var(--err-text);background:var(--err-bg);padding:1em;border-radius:8px;margin-bottom:1em;font-weight:bold}
   .modal-actions{display:flex;justify-content:flex-end;gap:1em;margin-top:1.5em}
+  /* --- Новый CSS для выпадающего меню языков --- */
+  .lang-dropdown { position: relative; display: inline-block; }
+  .lang-menu { display: none; position: absolute; right: 0; background-color: var(--card); min-width: 130px; box-shadow: 0 8px 16px 0 rgba(0,0,0,0.2); z-index: 1001; border-radius: 8px; border: 1px solid var(--border); overflow: hidden; margin-top: 5px; }
+  .lang-menu a { color: var(--text); padding: 10px 16px; text-decoration: none; display: block; cursor: pointer; font-size: 0.9em; }
+  .lang-menu a:hover { background-color: var(--btn-bg); }
+  .lang-menu.show { display: block; }
 </style></head><body>
 <header>
   <div><h1>🛡️ AmneziaWG Panel</h1><div class="sub">__LABEL__</div></div>
@@ -362,9 +368,15 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
       <div class="traffic-row"><span class="traffic-label">⬆ TX:</span><span class="traffic-value" id="total-tx">__TOTAL_TX__</span></div>
     </div>
     <button id="traffic-toggle-btn" class="btn ghost" title="Toggle traffic collection">&#128202; Track: ...</button>
-    <button id="check-update-btn" class="btn ghost" title="Check for updates">&#128260; Check Update</button>    
+      <button id="check-update-btn" class="btn ghost" data-i18n="btn_check_update">🔄 Проверить обновления</button>    
     <button id="restart-btn" class="btn ghost" data-i18n="btn_restart">🔄 Перезапуск</button>
-    <button id="lang-toggle" class="btn ghost" title="Switch language">🇷🇺 RU</button>
+    <div class="lang-dropdown">
+      <button id="lang-btn" class="btn ghost" title="Switch language">🌐</button>
+      <div class="lang-menu" id="lang-menu">
+        <a onclick="setLanguage('ru')">Русский</a>
+        <a onclick="setLanguage('en')">English</a>
+      </div>
+    </div>
     <button id="theme-toggle" class="btn ghost">🌙</button>
     <a href="/logout" class="btn ghost" data-i18n="btn_logout">🚪 Выход</a>
   </div>
@@ -439,6 +451,8 @@ const i18n = {
     traffic_title: "Трафик", update_avail: "Доступны обновления", update_ssh_warn: "⚠️ Внимание! Одно из обновлений затрагивает системные файлы. Для его полного применения потребуется вход по SSH и запуск deploy.sh --update.",
     btn_ignore: "Игнорировать", btn_update: "Обновить", no_updates: "Обновлений не найдено. У вас последняя версия.", err_check: "Ошибка проверки обновлений: ",
     confirm_update: "Обновить панель и скрипты? Страница перезагрузится через ~20 секунд.", updating: "Обновление..."
+    btn_check_update: "🔄 Проверить обновления",
+    checking: "⏳ Проверка...",
   },
   en: {
     signin: "Sign in", btn_login: "Sign in", btn_restart: "🔄 Restart", btn_logout: "🚪 Logout",
@@ -448,6 +462,8 @@ const i18n = {
     traffic_title: "Traffic", update_avail: "Updates Available", update_ssh_warn: "⚠️ Warning! Some updates affect system files. You will need SSH access and deploy.sh --update to apply them fully.",
     btn_ignore: "Ignore", btn_update: "Update", no_updates: "No updates found. You are on the latest version.", err_check: "Update check error: ",
     confirm_update: "Update panel and scripts? Page will reload in ~20s.", updating: "Updating..."
+    btn_check_update: "🔄 Check Update",
+    checking: "⏳ Checking...",
   }
 };
 
@@ -458,8 +474,26 @@ function applyLang() {
     var k = el.getAttribute('data-i18n');
     if (i18n[currentLang][k]) el.textContent = i18n[currentLang][k];
   });
-  var lt = document.getElementById('lang-toggle');
-  if(lt) lt.textContent = currentLang === 'ru' ? '🇷🇺 RU' : '🇬🇧 EN';
+  var ub = document.getElementById('check-update-btn');
+  if (ub && !ub.disabled) ub.textContent = t('btn_check_update');
+  window.setLanguage = function(lang) {
+  currentLang = lang;
+  localStorage.setItem('lang', currentLang);
+  document.getElementById('lang-menu').classList.remove('show');
+  applyLang();
+}
+
+document.getElementById('lang-btn').addEventListener('click', function(e) {
+  e.stopPropagation();
+  document.getElementById('lang-menu').classList.toggle('show');
+});
+
+window.addEventListener('click', function() {
+  var menu = document.getElementById('lang-menu');
+  if (menu && menu.classList.contains('show')) {
+    menu.classList.remove('show');
+  }
+});
   var title = document.getElementById('traffic-title');
   if (title && currentTrafficTarget) title.textContent = (currentLang==='ru'?'Трафик: ':'Traffic: ') + currentTrafficTarget;
   // Перерисовываем таблицу для обновления кнопок внутри неё
@@ -532,7 +566,7 @@ function applyLang() {
   if (_ub) {
     _ub.addEventListener('click', async function(){
       this.disabled = true;
-      this.textContent = '⏳ Checking...';
+      this.textContent = t('checking');
       try {
         var r = await fetch('/api/check_update', {credentials: 'same-origin'});
         if (r.status === 401) { location.href = '/login'; return; }
@@ -558,7 +592,7 @@ function applyLang() {
         alert(t('err_check') + e);
       } finally {
         this.disabled = false;
-        this.textContent = '🔄 Check Update';
+        this.textContent = t('btn_check_update');
       }
     });
   }
