@@ -4,6 +4,7 @@ import re
 import sqlite3
 import subprocess
 import time
+import sys
 
 # ===== Проверка состояния =====
 STATE_FILE = "/var/lib/amnezia-panel/traffic_enabled"
@@ -12,7 +13,7 @@ if os.path.exists(STATE_FILE):
     try:
         with open(STATE_FILE) as _f:
             if _f.read().strip() == "0":
-                exit(0)  # сбор отключён
+                sys.exit(0)  # сбор отключён
     except Exception:
         pass
 
@@ -50,24 +51,47 @@ if os.path.exists(CONF):
         if nm and pk:
             names[pk.group(1)] = nm.group(1)
 
-# Получаем текущий трафик через awg
+def parse_bytes(s):
+    """Парсит строку вида '55.88 MiB' или '0 B' в целые байты."""
+    if not s:
+        return 0
+    m = re.match(r"^\s*([\d.]+)\s*([KMG]?i?B|B)\s*$", str(s), re.I)
+    if not m:
+        return 0
+    v = float(m.group(1))
+    u = m.group(2).upper().replace("I", "")
+    return int(v * {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3}.get(u, 1))
+
+# Используем awg show awg1 (человеческий формат) — как в самой панели
 try:
-    out = subprocess.check_output(["awg", "show", "awg1", "dump"], text=True)
-except Exception:
-    exit(1)
+    r = subprocess.run(["awg", "show", "awg1"], capture_output=True,
+                       text=True, timeout=15, check=True)
+except Exception as e:
+    print(f"ERROR: failed to run awg show: {e}")
+    sys.exit(1)
+
+stats = {}
+cur = None
+for line in r.stdout.splitlines():
+    s = line.strip()
+    m = re.match(r"^peer:\s*(\S+)", s)
+    if m:
+        cur = m.group(1)
+        stats[cur] = {"rx": 0, "tx": 0}
+        continue
+    if not cur:
+        continue
+    m = re.match(r"^transfer:\s*(.+?)\s+received,\s*(.+?)\s+sent", s)
+    if m:
+        stats[cur]["rx"] = parse_bytes(m.group(1))
+        stats[cur]["tx"] = parse_bytes(m.group(2))
 
 ts = int(time.time())
-for line in out.strip().split("\n")[1:]:
-    parts = line.split("\t")
-    if len(parts) < 8:
-        continue
-    pub = parts[0]
-    rx = parts[5]
-    tx = parts[6]
+for pub, s in stats.items():
     name = names.get(pub, "unknown")
     conn.execute(
         "INSERT OR REPLACE INTO traffic(ts,pubkey,name,rx_total,tx_total) VALUES(?,?,?,?,?)",
-        (ts, pub, name, int(rx), int(tx))
+        (ts, pub, name, s["rx"], s["tx"])
     )
 
 # Очистка старых данных (раз в сутки)
