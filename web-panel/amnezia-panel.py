@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""AmneziaWG Web Panel — с графиками трафика."""
+"""AmneziaWG Web Panel — с графиками трафика, i18n и проверкой обновлений."""
 import os
 import re
 import io
@@ -10,6 +10,8 @@ import secrets
 import sqlite3
 import subprocess
 import time
+import urllib.request
+import json
 from fastapi import FastAPI, HTTPException, Depends, Form, Request
 from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse, Response, JSONResponse
 import qrcode
@@ -27,6 +29,8 @@ TRAFFIC_DB    = "/var/lib/amnezia-panel/traffic.db"
 SERVER_LABEL  = "__SERVER_LABEL__"
 TRAFFIC_STATE_FILE = "/var/lib/amnezia-panel/traffic_enabled"
 UPDATE_SCRIPT      = "/usr/local/bin/amnezia-update.sh"
+COMMIT_STATE_FILE  = "/var/lib/amnezia-panel/installed_commit"
+REPO_API_URL       = "https://api.github.com/repos/davideprikyan/amneziawg-cascade/commits"
 
 SESSION_COOKIE = "amnezia_session"
 SESSION_DAYS   = 7
@@ -65,12 +69,61 @@ def current_user(request: Request) -> str:
 
 def is_traffic_enabled() -> bool:
     if not os.path.exists(TRAFFIC_STATE_FILE):
-        return True  # по умолчанию включено
+        return True
     try:
         with open(TRAFFIC_STATE_FILE) as f:
             return f.read().strip() == "1"
     except Exception:
         return True
+
+# ================ Update Check ================
+def get_installed_commit():
+    if os.path.exists(COMMIT_STATE_FILE):
+        with open(COMMIT_STATE_FILE) as f:
+            return f.read().strip()
+    return ""
+
+def check_github_updates():
+    installed_sha = get_installed_commit()
+    try:
+        req = urllib.request.Request(REPO_API_URL + "?per_page=15", headers={'User-Agent': 'Amnezia-Panel'})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            commits = json.loads(resp.read().decode())
+    except Exception as e:
+        return {"error": str(e)}
+
+    new_commits = []
+    requires_ssh = False
+    
+    for c in commits:
+        sha = c["sha"]
+        if sha == installed_sha:
+            break # Дошли до текущей установленной версии
+        msg = c["commit"]["message"]
+        date = c["commit"]["author"]["date"]
+        new_commits.append({"sha": sha, "message": msg, "date": date})
+        
+        # Проверяем, не менялись ли критичные файлы, требующие SSH
+        try:
+            files_url = f"https://api.github.com/repos/davideprikyan/amneziawg-cascade/commits/{sha}"
+            req_f = urllib.request.Request(files_url, headers={'User-Agent': 'Amnezia-Panel'})
+            with urllib.request.urlopen(req_f, timeout=5) as resp_f:
+                data = json.loads(resp_f.read().decode())
+                for f in data.get("files", []):
+                    if f["filename"] in ("deploy.sh", "web-panel/amnezia-panel.service") or f["filename"].startswith("scripts/"):
+                        # Изменения в скриптах мы обновляем через панель, 
+                        # но если менялся deploy.sh или .service — это SSH.
+                        if f["filename"] == "deploy.sh" or f["filename"].endswith(".service"):
+                            requires_ssh = True
+        except Exception:
+            pass # Игнорируем ошибки проверки файлов, просто покажем коммит
+
+    return {
+        "has_updates": len(new_commits) > 0,
+        "commits": new_commits[:10], # показываем не более 10
+        "requires_ssh": requires_ssh,
+        "latest_sha": commits[0]["sha"] if commits else ""
+    }
 
 # ================ Парсинг ================
 def parse_clients():
@@ -156,74 +209,49 @@ def total_traffic(clients):
     tx = sum(parse_bytes(c.get("tx", "0 B")) for c in clients)
     return fmt_bytes(rx), fmt_bytes(tx)
 
-# ================ Статистика из SQLite ================
+# ================ Статистика ================
 def traffic_series(name: str, period: str):
-    """Возвращает {'labels': [...], 'rx': [...], 'tx': [...]} для Chart.js.
-    rx/tx — скорость в байт/сек между точками."""
     if not os.path.exists(TRAFFIC_DB):
         return {"labels": [], "rx": [], "tx": [], "error": "no data yet"}
-
     now = int(time.time())
     conf = {
-        "1h":  (now - 3600,    300),     # 12 точек
-        "24h": (now - 86400,   1800),    # 48 точек
-        "7d":  (now - 7*86400, 7200),    # 84 точки
+        "1h":  (now - 3600,    300),
+        "24h": (now - 86400,   1800),
+        "7d":  (now - 7*86400, 7200),
     }
     start, bucket = conf.get(period, conf["24h"])
-
     conn = sqlite3.connect(TRAFFIC_DB)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
-
     if name == "total":
-        cur.execute("""
-            SELECT pubkey, ts, rx_total, tx_total
-            FROM traffic WHERE ts >= ?
-            ORDER BY pubkey, ts
-        """, (start,))
+        cur.execute("SELECT pubkey, ts, rx_total, tx_total FROM traffic WHERE ts >= ? ORDER BY pubkey, ts", (start,))
     else:
-        cur.execute("""
-            SELECT pubkey, ts, rx_total, tx_total
-            FROM traffic WHERE name = ? AND ts >= ?
-            ORDER BY pubkey, ts
-        """, (name, start))
-
+        cur.execute("SELECT pubkey, ts, rx_total, tx_total FROM traffic WHERE name = ? AND ts >= ? ORDER BY pubkey, ts", (name, start))
     rows = cur.fetchall()
     conn.close()
-
-    # Разбиваем по pubkey, считаем дельты, агрегируем в bucket
     from collections import defaultdict
     buckets = defaultdict(lambda: {"rx": 0.0, "tx": 0.0})
     prev = {}
     for row in rows:
-        pk = row["pubkey"]
-        ts = row["ts"]
-        rx = row["rx_total"]
-        tx = row["tx_total"]
+        pk, ts, rx, tx = row["pubkey"], row["ts"], row["rx_total"], row["tx_total"]
         if pk in prev:
             p_ts, p_rx, p_tx = prev[pk]
-            d_rx = rx - p_rx
-            d_tx = tx - p_tx
-            # если awg1 перезапускался — delta < 0, пропускаем
+            d_rx, d_tx = rx - p_rx, tx - p_tx
             if d_rx >= 0 and d_tx >= 0:
                 b = (ts // bucket) * bucket
                 buckets[b]["rx"] += d_rx
                 buckets[b]["tx"] += d_tx
         prev[pk] = (ts, rx, tx)
-
-    labels = []
-    rxs = []
-    txs = []
+    labels, rxs, txs = [], [], []
     for b in sorted(buckets.keys()):
-        labels.append(time.strftime("%H:%M", time.localtime(b)) if period in ("1h","24h")
-                      else time.strftime("%d.%m %H:%M", time.localtime(b)))
+        labels.append(time.strftime("%H:%M", time.localtime(b)) if period in ("1h","24h") else time.strftime("%d.%m %H:%M", time.localtime(b)))
         rxs.append(round(buckets[b]["rx"], 1))
         txs.append(round(buckets[b]["tx"], 1))
     return {"labels": labels, "rx": rxs, "tx": txs}
 
 # ================ HTML: login ================
 LOGIN_TEMPLATE = r"""<!DOCTYPE html>
-<html lang="en" data-theme="light"><head>
+<html lang="ru" data-theme="light"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Login</title>
 <style>
@@ -243,18 +271,29 @@ LOGIN_TEMPLATE = r"""<!DOCTYPE html>
   .error{background:var(--err-bg);color:var(--err-text);padding:.8em;border-radius:8px;margin-bottom:1em;text-align:center;font-size:.9em}
 </style></head><body>
 <header><h1>🛡️ AmneziaWG Panel</h1><div class="sub">__LABEL__</div></header>
-<div class="wrap"><div class="card"><h2>Sign in</h2>__ERR__
+<div class="wrap"><div class="card"><h2 data-i18n="signin">Вход</h2>__ERR__
 <form method="post" action="/login">
   <input type="text" name="username" placeholder="Username" required autofocus autocomplete="username">
   <input type="password" name="password" placeholder="Password" required autocomplete="current-password">
-  <button type="submit">Sign in</button>
+  <button type="submit" data-i18n="btn_login">Войти</button>
 </form></div></div>
-<script>(function(){var t=localStorage.getItem('theme')||'light';document.documentElement.setAttribute('data-theme',t);})();</script>
+<script>
+(function(){
+  var t=localStorage.getItem('theme')||'light';
+  document.documentElement.setAttribute('data-theme',t);
+  var lang=localStorage.getItem('lang')||'ru';
+  document.querySelectorAll('[data-i18n]').forEach(function(el){
+    var k=el.getAttribute('data-i18n');
+    if(k==='signin') el.textContent = lang==='ru'?'Вход':'Sign in';
+    if(k==='btn_login') el.textContent = lang==='ru'?'Войти':'Sign in';
+  });
+})();
+</script>
 </body></html>"""
 
 # ================ HTML: main ================
 PAGE_TEMPLATE = r"""<!DOCTYPE html>
-<html lang="en" data-theme="light"><head>
+<html lang="ru" data-theme="light"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AmneziaWG Panel</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
@@ -300,7 +339,7 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
   .alert.err{background:var(--err-bg);color:var(--err-text);border-left:4px solid var(--err-border)}
   .refresh-indicator{font-size:.78em;color:var(--muted);text-align:right;margin-bottom:.4em}
   .modal{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.6);z-index:1000}
-  .modal-content{background:var(--card);color:var(--text);padding:2em;border-radius:12px;max-width:900px;width:90%;margin:3em auto;position:relative;max-height:90vh;overflow-y:auto}
+  .modal-content{background:var(--card);color:var(--text);padding:2em;border-radius:12px;max-width:700px;width:90%;margin:3em auto;position:relative;max-height:90vh;overflow-y:auto}
   .modal-content img{max-width:100%;height:auto;background:#fff;padding:1em;border-radius:8px}
   .close{position:absolute;top:.5em;right:1em;font-size:1.8em;cursor:pointer;color:var(--muted);line-height:1}
   .close:hover{color:var(--text)}
@@ -308,6 +347,12 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
   .period-btns button{background:var(--btn-bg);color:var(--text);padding:.5em 1em;font-size:.85em}
   .period-btns button.active{background:var(--accent);color:#fff}
   #traffic-chart{max-height:400px}
+  .update-list{margin:1em 0;max-height:300px;overflow-y:auto;text-align:left;font-size:0.9em;border:1px solid var(--border);border-radius:8px;padding:0.5em}
+  .update-item{padding:0.5em;border-bottom:1px solid var(--border)}
+  .update-item:last-child{border-bottom:none}
+  .update-date{color:var(--muted);font-size:0.85em}
+  .ssh-warn{color:var(--err-text);background:var(--err-bg);padding:1em;border-radius:8px;margin-bottom:1em;font-weight:bold}
+  .modal-actions{display:flex;justify-content:flex-end;gap:1em;margin-top:1.5em}
 </style></head><body>
 <header>
   <div><h1>🛡️ AmneziaWG Panel</h1><div class="sub">__LABEL__</div></div>
@@ -317,25 +362,30 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
       <div class="traffic-row"><span class="traffic-label">⬆ TX:</span><span class="traffic-value" id="total-tx">__TOTAL_TX__</span></div>
     </div>
     <button id="traffic-toggle-btn" class="btn ghost" title="Toggle traffic collection">&#128202; Track: ...</button>
-    <button id="update-btn" class="btn ghost" title="Update panel &amp; scripts">&#11014; Update</button>    
-    <button id="restart-btn" class="btn ghost">🔄 Restart</button>
+    <button id="check-update-btn" class="btn ghost" title="Check for updates">&#128260; Check Update</button>    
+    <button id="restart-btn" class="btn ghost" data-i18n="btn_restart">🔄 Перезапуск</button>
+    <button id="lang-toggle" class="btn ghost" title="Switch language">🇷🇺 RU</button>
     <button id="theme-toggle" class="btn ghost">🌙</button>
-    <a href="/logout" class="btn ghost">🚪 Logout</a>
+    <a href="/logout" class="btn ghost" data-i18n="btn_logout">🚪 Выход</a>
   </div>
 </header>
 <div class="container">
   __MSG__ __ERR__
   <div class="card">
-    <h3>➕ Create new client</h3>
+    <h3 data-i18n="create_title">➕ Создать нового клиента</h3>
     <form method="post" action="/create">
       <input type="text" name="name" placeholder="Client name (a-z, 0-9, _, -)" pattern="[a-zA-Z0-9_-]+" required autocomplete="off">
-      <button type="submit">Create</button>
+      <button type="submit" data-i18n="btn_create">Создать</button>
     </form>
   </div>
   <div class="card">
-    <h3>👥 Clients (<span id="clients-count">__COUNT__</span>)</h3>
-    <div class="refresh-indicator">Updated: <span id="last-update">--</span></div>
-    <table><thead><tr><th>Name</th><th>IP</th><th>Status</th><th>RX (from client)</th><th>TX (to client)</th><th>Handshake</th><th>Actions</th></tr></thead>
+    <h3><span data-i18n="clients_title">👥 Клиенты</span> (<span id="clients-count">__COUNT__</span>)</h3>
+    <div class="refresh-indicator"><span data-i18n="updated">Обновлено:</span> <span id="last-update">--</span></div>
+    <table><thead><tr>
+      <th data-i18n="th_name">Имя</th><th data-i18n="th_ip">IP</th><th data-i18n="th_status">Статус</th>
+      <th data-i18n="th_rx">RX (от клиента)</th><th data-i18n="th_tx">TX (клиенту)</th>
+      <th data-i18n="th_handshake">Handshake</th><th data-i18n="th_actions">Действия</th>
+    </tr></thead>
     <tbody id="clients-tbody">__ROWS__</tbody></table>
   </div>
 </div>
@@ -351,7 +401,7 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
 <!-- Traffic chart modal -->
 <div id="traffic-modal" class="modal"><div class="modal-content">
   <span class="close" onclick="closeTraffic()">&times;</span>
-  <h3 id="traffic-title">Traffic</h3>
+  <h3 id="traffic-title" data-i18n="traffic_title">Трафик</h3>
   <div class="period-btns">
     <button data-period="1h" onclick="loadTraffic(currentTrafficTarget,'1h',this)">1h</button>
     <button data-period="24h" onclick="loadTraffic(currentTrafficTarget,'24h',this)" class="active">24h</button>
@@ -360,9 +410,61 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
   <canvas id="traffic-chart"></canvas>
 </div></div>
 
+<!-- Update Modal -->
+<div id="update-modal" class="modal"><div class="modal-content">
+  <span class="close" onclick="document.getElementById('update-modal').style.display='none'">&times;</span>
+  <h3 data-i18n="update_avail">Доступны обновления</h3>
+  <div id="update-ssh-warning" class="ssh-warn" style="display:none;" data-i18n="update_ssh_warn">
+    ⚠️ Внимание! Одно из обновлений затрагивает системные файлы. Для его полного применения потребуется вход по SSH и запуск deploy.sh --update.
+  </div>
+  <div id="update-list" class="update-list"></div>
+  <div class="modal-actions">
+    <button class="btn" onclick="document.getElementById('update-modal').style.display='none'" data-i18n="btn_ignore">Игнорировать</button>
+    <button class="btn" style="background:var(--accent);color:#fff" id="do-update-btn" onclick="doUpdate()" data-i18n="btn_update">Обновить</button>
+  </div>
+</div></div>
+
 <script>
 var currentTrafficTarget = null;
 var trafficChart = null;
+var latestShaToSave = "";
+var currentLang = localStorage.getItem('lang') || 'ru';
+
+const i18n = {
+  ru: {
+    signin: "Вход", btn_login: "Войти", btn_restart: "🔄 Перезапуск", btn_logout: "🚪 Выход",
+    create_title: "➕ Создать нового клиента", btn_create: "Создать",
+    clients_title: "👥 Клиенты", updated: "Обновлено:",
+    th_name: "Имя", th_ip: "IP", th_status: "Статус", th_rx: "RX (от клиента)", th_tx: "TX (клиенту)", th_handshake: "Handshake", th_actions: "Действия",
+    traffic_title: "Трафик", update_avail: "Доступны обновления", update_ssh_warn: "⚠️ Внимание! Одно из обновлений затрагивает системные файлы. Для его полного применения потребуется вход по SSH и запуск deploy.sh --update.",
+    btn_ignore: "Игнорировать", btn_update: "Обновить", no_updates: "Обновлений не найдено. У вас последняя версия.", err_check: "Ошибка проверки обновлений: ",
+    confirm_update: "Обновить панель и скрипты? Страница перезагрузится через ~20 секунд.", updating: "Обновление..."
+  },
+  en: {
+    signin: "Sign in", btn_login: "Sign in", btn_restart: "🔄 Restart", btn_logout: "🚪 Logout",
+    create_title: "➕ Create new client", btn_create: "Create",
+    clients_title: "👥 Clients", updated: "Updated:",
+    th_name: "Name", th_ip: "IP", th_status: "Status", th_rx: "RX (from client)", th_tx: "TX (to client)", th_handshake: "Handshake", th_actions: "Actions",
+    traffic_title: "Traffic", update_avail: "Updates Available", update_ssh_warn: "⚠️ Warning! Some updates affect system files. You will need SSH access and deploy.sh --update to apply them fully.",
+    btn_ignore: "Ignore", btn_update: "Update", no_updates: "No updates found. You are on the latest version.", err_check: "Update check error: ",
+    confirm_update: "Update panel and scripts? Page will reload in ~20s.", updating: "Updating..."
+  }
+};
+
+function t(key) { return i18n[currentLang][key] || key; }
+
+function applyLang() {
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    var k = el.getAttribute('data-i18n');
+    if (i18n[currentLang][k]) el.textContent = i18n[currentLang][k];
+  });
+  var lt = document.getElementById('lang-toggle');
+  if(lt) lt.textContent = currentLang === 'ru' ? '🇷🇺 RU' : '🇬🇧 EN';
+  var title = document.getElementById('traffic-title');
+  if (title && currentTrafficTarget) title.textContent = (currentLang==='ru'?'Трафик: ':'Traffic: ') + currentTrafficTarget;
+  // Перерисовываем таблицу для обновления кнопок внутри неё
+  if (typeof refreshTableOnly === 'function') refreshTableOnly();
+}
 
 (function(){
   var saved = localStorage.getItem('theme') || 'light';
@@ -383,6 +485,13 @@ var trafficChart = null;
       trafficChart.update();
     }
   });
+
+  document.getElementById('lang-toggle').addEventListener('click', function(){
+    currentLang = currentLang === 'ru' ? 'en' : 'ru';
+    localStorage.setItem('lang', currentLang);
+    applyLang();
+  });
+
   // ===== Traffic toggle =====
   var trafficEnabled = true;
   async function loadTrafficStatus() {
@@ -418,41 +527,79 @@ var trafficChart = null;
     loadTrafficStatus();
   }
 
-  // ===== Update button =====
-  var _ub = document.getElementById('update-btn');
+  // ===== Check Update =====
+  var _ub = document.getElementById('check-update-btn');
   if (_ub) {
     _ub.addEventListener('click', async function(){
-      if (!confirm('Обновить панель и скрипты?\n\nСтраница перезагрузится через ~20 секунд.\nКонфиги туннеля НЕ будут изменены.')) return;
       this.disabled = true;
-      this.textContent = '\u23F3 Updating...';
+      this.textContent = '⏳ Checking...';
       try {
-        var r = await fetch('/api/update', {credentials: 'same-origin', method: 'POST'});
+        var r = await fetch('/api/check_update', {credentials: 'same-origin'});
         if (r.status === 401) { location.href = '/login'; return; }
-        if (r.ok) {
-          setTimeout(function(){ location.reload(); }, 20000);
+        var d = await r.json();
+        
+        if (d.error) {
+          alert(t('err_check') + d.error);
+        } else if (!d.has_updates) {
+          alert(t('no_updates'));
         } else {
-          alert('Update failed: HTTP ' + r.status);
-          this.disabled = false;
-          this.textContent = '\u2B06 Update';
+          // Показываем модалку
+          latestShaToSave = d.latest_sha;
+          var listDiv = document.getElementById('update-list');
+          listDiv.innerHTML = d.commits.map(c => 
+            '<div class="update-item"><div class="update-date">' + new Date(c.date).toLocaleString() + '</div>' + 
+            c.message.replace(/\\n/g, '<br>') + '</div>'
+          ).join('');
+          
+          document.getElementById('update-ssh-warning').style.display = d.requires_ssh ? 'block' : 'none';
+          document.getElementById('update-modal').style.display = 'block';
         }
       } catch(e) {
-        alert('Error: ' + e);
+        alert(t('err_check') + e);
+      } finally {
         this.disabled = false;
-        this.textContent = '\u2B06 Update';
+        this.textContent = '🔄 Check Update';
       }
     });
   }
 
-    document.getElementById('restart-btn').addEventListener('click', function(){
+  document.getElementById('restart-btn').addEventListener('click', function(){
     if (!confirm('Restart awg0 and awg1?')) return;
     var f = document.createElement('form'); f.method='POST'; f.action='/restart';
     document.body.appendChild(f); f.submit();
   });
 
   document.getElementById('total-traffic-btn').addEventListener('click', function(){
-    openTraffic('total', 'Total traffic');
+    openTraffic('total', t('traffic_title'));
   });
+
+  applyLang();
 })();
+
+async function doUpdate() {
+  var btn = document.getElementById('do-update-btn');
+  btn.disabled = true;
+  btn.textContent = '⏳ ' + t('updating');
+  try {
+    var r = await fetch('/api/update', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({sha: latestShaToSave})
+    });
+    if (r.ok) {
+      setTimeout(function(){ location.reload(); }, 20000);
+    } else {
+      alert('Update failed: HTTP ' + r.status);
+      btn.disabled = false;
+      btn.textContent = t('btn_update');
+    }
+  } catch(e) {
+    alert('Error: ' + e);
+    btn.disabled = false;
+    btn.textContent = t('btn_update');
+  }
+}
 
 function closeTraffic(){
   document.getElementById('traffic-modal').style.display='none';
@@ -461,7 +608,7 @@ function closeTraffic(){
 
 function openTraffic(target, title){
   currentTrafficTarget = target;
-  document.getElementById('traffic-title').textContent = title;
+  document.getElementById('traffic-title').textContent = (currentLang==='ru'?'Трафик: ':'Traffic: ') + (target==='total'?'Всего':target);
   document.getElementById('traffic-modal').style.display = 'block';
   document.querySelectorAll('.period-btns button').forEach(function(b){ b.classList.remove('active'); });
   document.querySelector('.period-btns button[data-period="24h"]').classList.add('active');
@@ -501,41 +648,20 @@ function renderChart(data){
     data: {
       labels: data.labels,
       datasets: [
-        {
-          label: 'RX (from clients)',
-          data: data.rx,
-          borderColor: '#4ade80',
-          backgroundColor: 'rgba(74,222,128,0.1)',
-          fill: true, tension: 0.3, pointRadius: 2, borderWidth: 2
-        },
-        {
-          label: 'TX (to clients)',
-          data: data.tx,
-          borderColor: '#60a5fa',
-          backgroundColor: 'rgba(96,165,250,0.1)',
-          fill: true, tension: 0.3, pointRadius: 2, borderWidth: 2
-        }
+        { label: 'RX (from clients)', data: data.rx, borderColor: '#4ade80', backgroundColor: 'rgba(74,222,128,0.1)', fill: true, tension: 0.3, pointRadius: 2, borderWidth: 2 },
+        { label: 'TX (to clients)', data: data.tx, borderColor: '#60a5fa', backgroundColor: 'rgba(96,165,250,0.1)', fill: true, tension: 0.3, pointRadius: 2, borderWidth: 2 }
       ]
     },
     options: {
-      responsive: true,
-      maintainAspectRatio: false,
+      responsive: true, maintainAspectRatio: false,
       interaction: { mode: 'index', intersect: false },
       plugins: {
         legend: { labels: { color: dark ? '#f5f5f7' : '#1d1d1f' } },
-        tooltip: {
-          callbacks: {
-            label: function(ctx){ return ctx.dataset.label + ': ' + fmtBytes(ctx.parsed.y); }
-          }
-        }
+        tooltip: { callbacks: { label: function(ctx){ return ctx.dataset.label + ': ' + fmtBytes(ctx.parsed.y); } } }
       },
       scales: {
         x: { ticks: { color: dark ? '#98989d' : '#6e6e73' }, grid: { color: dark ? '#3a3a3c' : '#ececf0' } },
-        y: {
-          ticks: { color: dark ? '#98989d' : '#6e6e73', callback: function(v){ return fmtBytes(v); } },
-          grid: { color: dark ? '#3a3a3c' : '#ececf0' },
-          beginAtZero: true
-        }
+        y: { ticks: { color: dark ? '#98989d' : '#6e6e73', callback: function(v){ return fmtBytes(v); } }, grid: { color: dark ? '#3a3a3c' : '#ececf0' }, beginAtZero: true }
       }
     }
   });
@@ -555,69 +681,83 @@ document.addEventListener('click', function(e){
   if (cn) {
     e.preventDefault();
     var n = cn.getAttribute('data-name');
-    openTraffic(n, 'Traffic: ' + n);
+    openTraffic(n, (currentLang==='ru'?'Трафик: ':'Traffic: ') + n);
     return;
   }
   if (e.target.id === 'qr-modal') document.getElementById('qr-modal').style.display = 'none';
   if (e.target.id === 'traffic-modal') closeTraffic();
 });
 
-(function(){
-  function statusClass(s){ return 's-' + String(s).toLowerCase(); }
-  function esc(s){ var d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
-  function parseBytes(s){
-    if (!s) return 0;
-    var m = String(s).match(/^\s*([\d.]+)\s*([KMG]?i?B|B)\s*$/i);
-    if (!m) return 0;
-    var mult = { 'B':1,'KB':1024,'MB':1048576,'GB':1073741824 };
-    return parseFloat(m[1]) * (mult[m[2].toUpperCase().replace('I','')] || 1);
+var _tableClients = [];
+
+function buildRow(c){
+  var statusLabel = c.status;
+  if (currentLang === 'ru') {
+    if (statusLabel === 'ONLINE') statusLabel = 'ОНЛАЙН';
+    if (statusLabel === 'OFFLINE') statusLabel = 'ОФФЛАЙН';
+    if (statusLabel === 'NEVER') statusLabel = 'НИКОГДА';
   }
-  function fmtBytes(b){
-    if (b >= 1073741824) return (b/1073741824).toFixed(2)+' GiB';
-    if (b >= 1048576)    return (b/1048576).toFixed(2)+' MiB';
-    if (b >= 1024)       return (b/1024).toFixed(2)+' KiB';
-    return Math.round(b)+' B';
-  }
-  function buildRow(c){
-    return '<tr>'+
-      '<td><span class="client-name" data-name="'+esc(c.name)+'">'+esc(c.name)+'</span></td>'+
-      '<td>'+esc(c.ip)+'</td>'+
-      '<td class="'+statusClass(c.status)+'">'+esc(c.status)+'</td>'+
-      '<td>'+esc(c.rx)+'</td>'+
-      '<td>'+esc(c.tx)+'</td>'+
-      '<td>'+esc(c.handshake)+'</td>'+
-      '<td>'+
-        '<a href="/download/conf/'+encodeURIComponent(c.name)+'" class="btn">.conf</a>'+
-        '<a href="/download/vpn/'+encodeURIComponent(c.name)+'" class="btn">vpn://</a>'+
-        '<button type="button" class="btn qr-btn" data-name="'+esc(c.name)+'">QR</button>'+
-        '<form method="post" action="/delete/'+encodeURIComponent(c.name)+'" onsubmit="return confirm(\'Delete client '+esc(c.name)+'?\')" style="display:inline">'+
-        '<button type="submit" class="btn danger">Delete</button></form>'+
-      '</td></tr>';
-  }
-  var updating = false;
-  async function refresh(){
-    if (updating) return;
-    updating = true;
-    try {
-      var r = await fetch('/api/clients', { credentials:'same-origin', cache:'no-store' });
-      if (r.status === 401) { location.href = '/login'; return; }
-      if (!r.ok) return;
-      var clients = await r.json();
-      var tb = document.getElementById('clients-tbody');
-      tb.innerHTML = clients.length === 0
-        ? '<tr><td colspan="7" class="empty">No clients yet</td></tr>'
-        : clients.map(buildRow).join('');
-      document.getElementById('clients-count').textContent = clients.length;
-      document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
-      var rxs = 0, txs = 0;
-      clients.forEach(function(c){ rxs += parseBytes(c.rx); txs += parseBytes(c.tx); });
-      document.getElementById('total-rx').textContent = fmtBytes(rxs);
-      document.getElementById('total-tx').textContent = fmtBytes(txs);
-    } catch(e) {} finally { updating = false; }
-  }
-  setInterval(refresh, 5000);
-  setTimeout(refresh, 500);
-})();
+  var btnDelete = currentLang === 'ru' ? 'Удалить' : 'Delete';
+  return '<tr>'+
+    '<td><span class="client-name" data-name="'+esc(c.name)+'">'+esc(c.name)+'</span></td>'+
+    '<td>'+esc(c.ip)+'</td>'+
+    '<td class="s-'+c.status.toLowerCase()+'">'+statusLabel+'</td>'+
+    '<td>'+esc(c.rx)+'</td>'+
+    '<td>'+esc(c.tx)+'</td>'+
+    '<td>'+esc(c.handshake)+'</td>'+
+    '<td>'+
+      '<a href="/download/conf/'+encodeURIComponent(c.name)+'" class="btn">.conf</a>'+
+      '<a href="/download/vpn/'+encodeURIComponent(c.name)+'" class="btn">vpn://</a>'+
+      '<button type="button" class="btn qr-btn" data-name="'+esc(c.name)+'">QR</button>'+
+      '<form method="post" action="/delete/'+encodeURIComponent(c.name)+'" onsubmit="return confirm(\''+(currentLang==='ru'?'Удалить клиента ':'Delete client ')+esc(c.name)+'?\')" style="display:inline">'+
+      '<button type="submit" class="btn danger">'+btnDelete+'</button></form>'+
+    '</td></tr>';
+}
+
+function esc(s){ var d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
+function parseBytes(s){
+  if (!s) return 0;
+  var m = String(s).match(/^\s*([\d.]+)\s*([KMG]?i?B|B)\s*$/i);
+  if (!m) return 0;
+  var mult = { 'B':1,'KB':1024,'MB':1048576,'GB':1073741824 };
+  return parseFloat(m[1]) * (mult[m[2].toUpperCase().replace('I','')] || 1);
+}
+function fmtBytes(b){
+  if (b >= 1073741824) return (b/1073741824).toFixed(2)+' GiB';
+  if (b >= 1048576)    return (b/1048576).toFixed(2)+' MiB';
+  if (b >= 1024)       return (b/1024).toFixed(2)+' KiB';
+  return Math.round(b)+' B';
+}
+
+function refreshTableOnly() {
+  if (!_tableClients.length) return;
+  var tb = document.getElementById('clients-tbody');
+  tb.innerHTML = _tableClients.map(buildRow).join('');
+}
+
+var updating = false;
+async function refresh(){
+  if (updating) return;
+  updating = true;
+  try {
+    var r = await fetch('/api/clients', { credentials:'same-origin', cache:'no-store' });
+    if (r.status === 401) { location.href = '/login'; return; }
+    if (!r.ok) return;
+    _tableClients = await r.json();
+    var tb = document.getElementById('clients-tbody');
+    tb.innerHTML = _tableClients.length === 0
+      ? '<tr><td colspan="7" class="empty">'+(currentLang==='ru'?'Нет клиентов':'No clients yet')+'</td></tr>'
+      : _tableClients.map(buildRow).join('');
+    document.getElementById('clients-count').textContent = _tableClients.length;
+    document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
+    var rxs = 0, txs = 0;
+    _tableClients.forEach(function(c){ rxs += parseBytes(c.rx); txs += parseBytes(c.tx); });
+    document.getElementById('total-rx').textContent = fmtBytes(rxs);
+    document.getElementById('total-tx').textContent = fmtBytes(txs);
+  } catch(e) {} finally { updating = false; }
+}
+setInterval(refresh, 5000);
+setTimeout(refresh, 500);
 </script></body></html>"""
 
 def render_login(error=""):
@@ -713,6 +853,11 @@ async def api_clients(request: Request):
     current_user(request)
     return JSONResponse(enrich(parse_clients()))
 
+@app.get("/api/check_update")
+async def api_check_update(request: Request):
+    current_user(request)
+    return JSONResponse(check_github_updates())
+
 @app.get("/api/traffic/status")
 async def api_traffic_status(request: Request):
     current_user(request)
@@ -732,9 +877,18 @@ async def api_update(request: Request):
     current_user(request)
     if not os.path.exists(UPDATE_SCRIPT):
         raise HTTPException(500, "update script not found. Run deploy.sh --update once via SSH.")
+    
     try:
-        # systemd-run создаёт отдельный transient unit, который переживёт
-        # перезапуск amnezia-panel
+        body = await request.json()
+        sha_to_save = body.get("sha", "")
+    except:
+        sha_to_save = ""
+
+    try:
+        if sha_to_save:
+            with open(COMMIT_STATE_FILE, "w") as f:
+                f.write(sha_to_save)
+
         subprocess.run([
             "systemd-run",
             "--collect",

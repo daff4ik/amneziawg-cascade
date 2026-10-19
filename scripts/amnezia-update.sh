@@ -72,3 +72,9 @@ if systemctl is-active --quiet amnezia-panel; then
 else
     echo "=== Update FAILED - panel not active ==="
 fi
+# Сохраняем хеш текущего коммита, чтобы панель знала, что мы обновились
+LATEST_SHA=$(curl -s "https://api.github.com/repos/davideprikyan/amneziawg-cascade/commits/main" | grep -oP '"sha":\s*"\K[^"]+' | head -1)
+if [[ -n "$LATEST_SHA" ]]; then
+    mkdir -p /var/lib/amnezia-panel
+    echo "$LATEST_SHA" > /var/lib/amnezia-panel/installed_commit
+fi
