@@ -340,9 +340,9 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
   <span class="close" onclick="closeTraffic()">&times;</span>
   <h3 id="traffic-title">Traffic</h3>
   <div class="period-btns">
-    <button data-period="1h" onclick="loadTraffic('__TARGET__','1h',this)">1h</button>
-    <button data-period="24h" onclick="loadTraffic('__TARGET__','24h',this)" class="active">24h</button>
-    <button data-period="7d" onclick="loadTraffic('__TARGET__','7d',this)">7d</button>
+    <button data-period="1h" onclick="loadTraffic(currentTrafficTarget,'1h',this)">1h</button>
+    <button data-period="24h" onclick="loadTraffic(currentTrafficTarget,'24h',this)" class="active">24h</button>
+    <button data-period="7d" onclick="loadTraffic(currentTrafficTarget,'7d',this)">7d</button>
   </div>
   <canvas id="traffic-chart"></canvas>
 </div></div>
