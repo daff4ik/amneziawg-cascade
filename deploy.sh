@@ -72,19 +72,15 @@ if [[ $UPDATE_MODE -eq 1 ]]; then
 
     # SERVER_NAME — из существующей панели, если есть
     if [[ -f /opt/amnezia-panel.py ]]; then
-        SERVER_NAME=$(grep -oP 'SERVER_LABEL\s*=\s*"\K[^"]+' /opt/amnezia-panel.py | head -1 || echo "AmneziaVPN")if [[ -f /opt/amnezia-panel.py ]]; then
         SERVER_NAME=$(grep -oP 'SERVER_LABEL\s*=\s*"\K[^"]+' /opt/amnezia-panel.py | head -1 || echo "")
     else
         SERVER_NAME=""
     fi
     
-    # Если имя не найдено или оно странное — спрашиваем
+    # Если имя не найдено или оно является заглушкой — спрашиваем
     if [[ -z "$SERVER_NAME" || "$SERVER_NAME" == "__SERVER_LABEL__" || "$SERVER_NAME" == "Ваш лейбл" ]]; then
         read -p "Название сервера для AmneziaVPN (например, 'RuGer1'): " SERVER_NAME
         SERVER_NAME="${SERVER_NAME:-AmneziaVPN}"
-    fi
-    else
-        SERVER_NAME="AmneziaVPN"
     fi
 
     read -p "SSH-порт SERVER-B [$DE_IP] [22]: " DE_SSH_PORT
