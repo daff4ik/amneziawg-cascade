@@ -142,7 +142,7 @@ SSH — стандарт де-факто для управления любым�
 
 ```bash
 # На SERVER-A (входной)
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/davideprikyan/amneziawg-cascade/main/deploy.sh -o /tmp/deploy.sh >/dev/null; cat /tmp/deploy.sh)"
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/daff4ik/amneziawg-cascade/main/deploy.sh -o /tmp/deploy.sh >/dev/null; cat /tmp/deploy.sh)"
 ```
 
 Скрипт спросит:

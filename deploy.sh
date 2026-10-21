@@ -24,7 +24,7 @@ for arg in "$@"; do
 done
 
 # ==================== Константы ====================
-REPO_URL="https://raw.githubusercontent.com/davideprikyan/amneziawg-cascade/main"
+REPO_URL="https://raw.githubusercontent.com/daff4ik/amneziawg-cascade/main"
 
 AWG_DIR="/etc/amnezia/amneziawg"
 AWG_TUNNEL_PORT="8443"
@@ -77,7 +77,7 @@ if [[ $UPDATE_MODE -eq 1 ]]; then
         SERVER_NAME=""
     fi
     
-    # Если имя не найдено или оно является заглушкой — спрашиваем
+    # Если имя не найдено или оно странное — спрашиваем
     if [[ -z "$SERVER_NAME" || "$SERVER_NAME" == "__SERVER_LABEL__" || "$SERVER_NAME" == "Ваш лейбл" ]]; then
         read -p "Название сервера для AmneziaVPN (например, 'RuGer1'): " SERVER_NAME
         SERVER_NAME="${SERVER_NAME:-AmneziaVPN}"
@@ -151,7 +151,6 @@ SCRIPTS_TO_DOWNLOAD=(
     amnezia-notify-setup.sh
     amnezia-healthcheck.sh
     amnezia-traffic-collector.py
-    amnezia-update.sh
 )
 
 for f in "${SCRIPTS_TO_DOWNLOAD[@]}"; do
@@ -639,15 +638,11 @@ EOF
 fi
 
 # =====================================================================
-#  Итоговая сводка
-# =====================================================================
-
-# =====================================================================
 #  Сохранение текущего коммита для проверки обновлений
 # =====================================================================
 if [[ "$INSTALL_PANEL" =~ ^[yYдД] ]]; then
     echo "  ↓ Сохранение текущей версии репозитория"
-    LATEST_SHA=$(curl -s "https://api.github.com/repos/davideprikyan/amneziawg-cascade/commits/main" | grep -oP '"sha":\s*"\K[^"]+' | head -1)
+    LATEST_SHA=$(curl -s "https://api.github.com/repos/daff4ik/amneziawg-cascade/commits/main" | grep -oP '"sha":\s*"\K[^"]+' | head -1)
     if [[ -n "$LATEST_SHA" ]]; then
         mkdir -p /var/lib/amnezia-panel
         echo "$LATEST_SHA" > /var/lib/amnezia-panel/installed_commit
