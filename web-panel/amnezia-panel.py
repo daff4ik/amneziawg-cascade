@@ -825,11 +825,22 @@ async function deleteServer(sid) {
   await loadServers();
 }
 
-document.addEventListener('click', function(e){
+document.addEventListener('click', async function(e){
   var qr = e.target.closest ? e.target.closest('.qr-btn') : null;
   if (qr) {
     e.preventDefault();
     var nm = qr.getAttribute('data-name');
+    // Проверяем, существует ли QR-код (файл .vpn.txt)
+    try {
+        var res = await fetch('/qr/' + encodeURIComponent(nm));
+        if (!res.ok) {
+            alert('Файл vpn:// для клиента "' + nm + '" не найден.\n\nЧтобы сгенерировать QR-код, удалите этого клиента и создайте заново. Когда скрипт спросит "Сконвертировать в vpn://?", ответьте "y".');
+            return;
+        }
+    } catch(err) {
+        alert('Ошибка соединения при загрузке QR-кода.');
+        return;
+    }
     document.getElementById('qr-name').textContent = nm;
     document.getElementById('qr-img').src = '/qr/' + encodeURIComponent(nm) + '?_=' + Date.now();
     document.getElementById('qr-modal').style.display = 'block';
