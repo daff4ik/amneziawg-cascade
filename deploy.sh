@@ -125,6 +125,7 @@ fi
 #  Скачивание helper-скриптов
 # =====================================================================
 say "Скачивание helper-скриптов из репозитория"
+
 SCRIPTS_TO_DOWNLOAD=(
     amnezia-add-client.sh
     amnezia-remove-client.sh
@@ -135,15 +136,37 @@ SCRIPTS_TO_DOWNLOAD=(
     amnezia-traffic-collector.py
 )
 
-for f in "${SCRIPTS_TO_DOWNLOAD[@]}"; do
-    url="$REPO_URL/scripts/$f"
-    echo "  ↓ $f"
-    if ! curl -fsSL "$url" -o "/tmp/$f"; then
-        warn "Не удалось скачать $url — пропускаю"
-        rm -f "/tmp/$f"
-        continue
+# Массив зеркал для обхода блокировки GitHub Raw в РФ
+MIRRORS=(
+    "https://raw.githubusercontent.com/daff4ik/amneziawg-cascade/main"
+    "https://ghproxy.net/https://raw.githubusercontent.com/daff4ik/amneziawg-cascade/main"
+    "https://mirror.ghproxy.com/https://raw.githubusercontent.com/daff4ik/amneziawg-cascade/main"
+    "https://raw.fastgit.org/daff4ik/amneziawg-cascade/main"
+)
+
+download_file() {
+    local filename=$1
+    local dest_path=$2
+    local success=0
+    
+    echo "  ↓ $filename"
+    for mirror in "${MIRRORS[@]}"; do
+        local url="$mirror/scripts/$filename"
+        if curl -fsSL --connect-timeout 5 --max-time 15 "$url" -o "$dest_path"; then
+            success=1
+            break
+        fi
+    done
+    
+    if [[ $success -eq 0 ]]; then
+        warn "Не удалось скачать $filename ни с одного зеркала — пропускаю"
+        rm -f "$dest_path"
     fi
-    chmod +x "/tmp/$f"
+}
+
+for f in "${SCRIPTS_TO_DOWNLOAD[@]}"; do
+    download_file "$f" "/tmp/$f"
+    [[ -f "/tmp/$f" ]] && chmod +x "/tmp/$f"
 done
 ok "Скрипты скачаны"
 
@@ -533,11 +556,21 @@ if [[ "$INSTALL_PANEL" =~ ^[yYдД] ]]; then
         esac
     fi
 
-    echo "  ↓ Скачивание amnezia-panel.py"
-    curl -fsSL "$REPO_URL/web-panel/amnezia-panel.py" -o /tmp/amnezia-panel.py || { err "Не удалось скачать amnezia-panel.py"; exit 1; }
-    echo "  ↓ Скачивание amnezia-panel.service"
-    curl -fsSL "$REPO_URL/web-panel/amnezia-panel.service" -o /tmp/amnezia-panel.service || { err "Не удалось скачать amnezia-panel.service"; exit 1; }
-
+   echo "  ↓ Скачивание файлов веб-панели"
+    PANEL_DL_OK=0
+    for mirror in "${MIRRORS[@]}"; do
+        if curl -fsSL --connect-timeout 5 --max-time 15 "$mirror/web-panel/amnezia-panel.py" -o /tmp/amnezia-panel.py && \
+           curl -fsSL --connect-timeout 5 --max-time 15 "$mirror/web-panel/amnezia-panel.service" -o /tmp/amnezia-panel.service; then
+            PANEL_DL_OK=1
+            break
+        fi
+    done
+    
+    if [[ $PANEL_DL_OK -eq 0 ]]; then
+        err "Не удалось скачать файлы панели ни с одного зеркала"
+        exit 1
+    fi
+        
     apt install -y -qq python3-venv
     python3 -m venv /opt/amnezia-panel-venv
     /opt/amnezia-panel-venv/bin/pip install --quiet --upgrade pip
