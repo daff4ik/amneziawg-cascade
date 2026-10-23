@@ -7,11 +7,11 @@ set -euo pipefail
 [[ $EUID -ne 0 ]] && { echo "Ошибка: Запускать от root (sudo $0)"; exit 1; }
 
 echo "=== Настройка Stealth-режима веб-панели ==="
-read -p "Введите ваш субдомен (например, oldgames.8bit.ca): " DOMAIN
+read -p "Введите ваш домен или субдомен (например, mysite.com): " DOMAIN
 [[ -z "$DOMAIN" ]] && { echo "Домен обязателен."; exit 1; }
 
-read -p "Введите секретный путь (например, dalek или ballon, без слэшей): " SECRET_PATH
-[[ -z "$SECRET_PATH" ]] && { echo "Секретный путь обязателен."; exit 1; }
+read -p "Введите кодовое слово для скрытого пути (без слэшей): " SECRET_PATH
+[[ -z "$SECRET_PATH" ]] && { echo "Кодовое слово обязательно."; exit 1; }
 
 echo "Установка Nginx и Certbot..."
 apt update -qq

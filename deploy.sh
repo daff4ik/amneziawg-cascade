@@ -689,3 +689,20 @@ if [[ "$INSTALL_PANEL" =~ ^[yYдД] ]]; then
 fi
 
 echo "Приятного использования!"
+
+# Предложение установить Stealth-режим
+if [[ "$INSTALL_PANEL" =~ ^[yYдД] && $UPDATE_MODE -eq 0 ]]; then
+    echo ""
+    say "Stealth-режим (Опционально)"
+    echo "Вы можете скрыть админ-панель за 8-битной страницей-заглушкой."
+    echo "ВНИМАНИЕ: Для этого у вас уже должен быть домен (субдомен), привязанный к IP этого сервера!"
+    read -p "Активировать Stealth-режим сейчас? (y/n) [n]: " ASK_STEALTH
+    if [[ "$ASK_STEALTH" =~ ^[yYдД] ]]; then
+        if curl -fsSL --connect-timeout 5 "https://raw.githubusercontent.com/daff4ik/amneziawg-cascade/main/stealth-setup.sh" -o /tmp/stealth-setup.sh || \
+           curl -fsSL --connect-timeout 5 "https://ghproxy.net/https://raw.githubusercontent.com/daff4ik/amneziawg-cascade/main/stealth-setup.sh" -o /tmp/stealth-setup.sh; then
+            bash /tmp/stealth-setup.sh
+        else
+            err "Не удалось скачать stealth-setup.sh. Вы можете запустить его позже вручную."
+        fi
+    fi
+fi
