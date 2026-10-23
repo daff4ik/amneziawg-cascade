@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""AmneziaWG Web Panel — с управлением и переключением SERVER B."""
+"""AmneziaWG Web Panel — с управлением, переключением SERVER B и Stealth-режимом."""
 import os
 import re
 import io
@@ -36,6 +36,19 @@ REPO_API_URL      = "https://api.github.com/repos/daff4ik/amneziawg-cascade/comm
 
 SESSION_COOKIE = "amnezia_session"
 SESSION_DAYS   = 7
+
+# ================ Конфигурация запуска ================
+def get_config_val(key, default):
+    if not os.path.exists(CONFIG_FILE): return default
+    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+        for line in f:
+            if line.strip().startswith(f"{key}="):
+                return line.strip().split("=", 1)[1]
+    return default
+
+BASE_URL = get_config_val("base_url", "")
+BIND_HOST = get_config_val("host", "0.0.0.0")
+USE_SSL = get_config_val("ssl", "true").lower() == "true"
 
 # ================ Auth ================
 def load_credentials():
@@ -256,24 +269,20 @@ def do_switch_server(server, password):
     ip, port, user = server["ip"], server["port"], server["user"]
     name = server.get("name", ip)
 
-    # 1. SSH check
     ok, out, err = ssh_exec(ip, port, user, password, "echo SSH_OK")
     if not ok or "SSH_OK" not in (out or ""):
         return False, f"SSH до {ip} не работает: {err or out}"
 
-    # 2. Install AmneziaWG on new DE
     ok, out, err = install_awg_remote(ip, port, user, password)
     if not ok or "INSTALLED_OK" not in (out or ""):
         return False, f"Установка AmneziaWG не удалась: {(err or out)[-300:]}"
 
-    # 3. Detect external iface
     ok, out, _ = ssh_exec(ip, port, user, password,
                           "ip route get 8.8.8.8 | awk '{print $5}' | head -1")
     de_iface = (out or "").strip().split("\n")[0]
     if not de_iface:
         return False, "Не удалось определить внешний интерфейс на новом DE"
 
-    # 4. Generate new DE keypair
     r = subprocess.run(["awg", "genkey"], capture_output=True, text=True, check=True)
     de_priv = r.stdout.strip()
     r = subprocess.run(["awg", "pubkey"], input=de_priv, capture_output=True, text=True, check=True)
@@ -282,10 +291,8 @@ def do_switch_server(server, password):
     with open(AWG0_PUBKEY, encoding="utf-8") as f:
         ru_pub = f.read().strip()
 
-    # 5. Build DE config
     de_conf = build_de_conf(AWG0_CONF, de_priv, ru_pub, de_iface)
 
-    # 6. Upload
     ssh_exec(ip, port, user, password,
              "mkdir -p /etc/amnezia/amneziawg && chmod 700 /etc/amnezia/amneziawg")
     files = {
@@ -309,17 +316,14 @@ def do_switch_server(server, password):
             try: os.remove(lp)
             except: pass
 
-    # 7. Start tunnel on new DE
     ssh_exec(ip, port, user, password,
              "systemctl daemon-reload && systemctl enable awg-quick@awg0 2>/dev/null; "
              "systemctl restart awg-quick@awg0")
 
-    # 8. Backup RU config
     os.makedirs("/var/lib/amnezia-panel", exist_ok=True)
     backup = "/var/lib/amnezia-panel/awg0.conf.before_switch"
     shutil.copy(AWG0_CONF, backup)
 
-    # 9. Modify + restart RU (with rollback on error)
     try:
         with open(AWG0_CONF, encoding="utf-8") as f:
             ru_conf = f.read()
@@ -333,7 +337,6 @@ def do_switch_server(server, password):
         subprocess.run(["systemctl", "restart", "awg-quick@awg0"], capture_output=True)
         return False, f"Ошибка обновления конфига RU, откат выполнен: {e}"
 
-    # 10. Wait for handshake
     for _ in range(6):
         time.sleep(3)
         r = subprocess.run(["ping", "-c", "2", "-W", "2", "10.10.10.1"],
@@ -344,7 +347,6 @@ def do_switch_server(server, password):
             save_servers(data)
             return True, f"Успешно переключено на {name} ({ip}). Туннель работает."
 
-    # 11. Rollback
     shutil.copy(backup, AWG0_CONF)
     subprocess.run(["systemctl", "restart", "awg-quick@awg0"], capture_output=True)
     return False, f"Туннель с {ip} не отвечает. Откат на предыдущий конфиг выполнен."
@@ -462,7 +464,7 @@ LOGIN_TEMPLATE = r"""<!DOCTYPE html>
 </style></head><body>
 <header><h1>🛡️ AmneziaWG Panel</h1><div class="sub">__LABEL__</div></header>
 <div class="wrap"><div class="card"><h2>Вход</h2>__ERR__
-<form method="post" action="/login">
+<form method="post" action="__BASE__/login">
   <input type="text" name="username" placeholder="Username" required autofocus>
   <input type="password" name="password" placeholder="Password" required>
   <button type="submit">Войти</button>
@@ -550,14 +552,14 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
       </div>
     </div>
     <button id="theme-toggle" class="btn ghost">🌙</button>
-    <a href="/logout" class="btn ghost" data-i18n="btn_logout">🚪 Выход</a>
+    <a href="__BASE__/logout" class="btn ghost" data-i18n="btn_logout">🚪 Выход</a>
   </div>
 </header>
 <div class="container">
   __MSG__ __ERR__
   <div class="card">
     <h3 data-i18n="create_title">➕ Создать нового клиента</h3>
-    <form method="post" action="/create">
+    <form method="post" action="__BASE__/create">
       <input type="text" name="name" placeholder="Client name (a-z, 0-9, _, -)" pattern="[a-zA-Z0-9_-]+" required autocomplete="off">
       <button type="submit" data-i18n="btn_create">Создать</button>
     </form>
@@ -574,27 +576,20 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
   </div>
 </div>
 
-<!-- Update modal -->
 <div id="update-modal" class="modal"><div class="modal-content">
   <span class="close" onclick="document.getElementById('update-modal').style.display='none'">&times;</span>
   <h3 data-i18n="update_avail">Доступны обновления</h3>
   <div id="update-list" class="update-list"></div>
-  
   <div class="instructions">
     <p style="margin-top:0;font-weight:bold;" data-i18n="update_instructions">Инструкция по обновлению:</p>
-    <p style="font-size:0.9em;margin-bottom:0.5em;" data-i18n="update_ssh_step">1. Подключитесь к серверу по SSH:</p>
-    <pre>ssh root@<span id="panel-ip"></span></pre>
-    <p style="font-size:0.9em;margin:1em 0 0.5em 0;" data-i18n="update_cmd_step">2. Выполните команду обновления:</p>
+    <p style="font-size:0.9em;margin-bottom:0.5em;" data-i18n="update_cmd_step">Выполните команду обновления по SSH:</p>
     <pre>sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/daff4ik/amneziawg-cascade/main/deploy.sh)" -- --update</pre>
-    <p style="font-size:0.8em;color:var(--muted);margin-bottom:0;" data-i18n="update_note">После завершения скрипта обновите эту страницу.</p>
   </div>
-
   <div class="modal-actions">
     <button class="btn" onclick="document.getElementById('update-modal').style.display='none'" data-i18n="btn_close">Закрыть</button>
   </div>
 </div></div>
 
-<!-- Servers modal -->
 <div id="servers-modal" class="modal"><div class="modal-content">
   <span class="close" onclick="closeServersModal()">&times;</span>
   <h3 data-i18n="servers_title">Управление SERVER B</h3>
@@ -607,9 +602,6 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
     <input type="text" id="add-name" placeholder="Название (опционально)">
     <input type="password" id="add-pass" placeholder="SSH-пароль">
     <button id="add-server-btn" onclick="addServer()" data-i18n="btn_servers_add">Добавить и проверить</button>
-    <p style="font-size:.8em;color:var(--muted);margin-top:.5em;" data-i18n="servers_note">
-      💡 Пароль используется только для проверки SSH. Он не сохраняется. При переключении его нужно будет ввести снова.
-    </p>
   </div>
 </div></div>
 
@@ -619,9 +611,8 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
 </div>
 
 <script>
-var latestShaToSave = "";
 var currentLang = localStorage.getItem('lang') || 'ru';
-document.getElementById('panel-ip').textContent = window.location.hostname;
+var BASE_URL = "__BASE__";
 
 const i18n = {
   ru: {
@@ -631,13 +622,10 @@ const i18n = {
     th_name: "Имя", th_ip: "IP", th_status: "Статус", th_rx: "RX (всего)", th_tx: "TX (всего)", th_handshake: "Последний handshake", th_actions: "Действия",
     update_avail: "Доступны обновления", btn_close: "Закрыть",
     update_instructions: "Инструкция по обновлению:",
-    update_ssh_step: "1. Подключитесь к серверу по SSH:",
-    update_cmd_step: "2. Выполните команду обновления:",
-    update_note: "После завершения скрипта обновите эту страницу.",
+    update_cmd_step: "Выполните команду обновления по SSH:",
     no_updates: "Обновлений не найдено. У вас последняя версия.", err_check: "Ошибка проверки обновлений: ",
     btn_check_update: "🔄 Проверить обновления", checking: "⏳ Проверка...",
     btn_servers: "🌐 Серверы", servers_title: "Управление SERVER B", servers_add_title: "Добавить сервер", btn_servers_add: "Добавить и проверить",
-    servers_note: "💡 Пароль используется только для проверки SSH. Он не сохраняется. При переключении его нужно будет ввести снова.",
     servers_empty: "Нет добавленных серверов"
   },
   en: {
@@ -647,13 +635,10 @@ const i18n = {
     th_name: "Name", th_ip: "IP", th_status: "Status", th_rx: "RX (total)", th_tx: "TX (total)", th_handshake: "Last handshake", th_actions: "Actions",
     update_avail: "Updates Available", btn_close: "Close",
     update_instructions: "Update instructions:",
-    update_ssh_step: "1. Connect to the server via SSH:",
-    update_cmd_step: "2. Run the update command:",
-    update_note: "After the script finishes, refresh this page.",
-    no_updates: "No updates found. You are on the latest version.", err_check: "Update check error: ",
+    update_cmd_step: "Run the update command via SSH:",
+    no_updates: "No updates found.", err_check: "Update check error: ",
     btn_check_update: "🔄 Check Update", checking: "⏳ Checking...",
     btn_servers: "🌐 Servers", servers_title: "SERVER B Management", servers_add_title: "Add server", btn_servers_add: "Add & check",
-    servers_note: "💡 Password is used only for SSH check. It is not stored. You will need to enter it again to switch.",
     servers_empty: "No servers added yet"
   }
 };
@@ -706,13 +691,12 @@ function hideLoader() { document.getElementById('global-loader').style.display =
     this.disabled = true;
     this.textContent = t('checking');
     try {
-      var r = await fetch('/api/check_update', {credentials: 'same-origin'});
-      if (r.status === 401) { location.href = '/login'; return; }
+      var r = await fetch(BASE_URL + '/api/check_update', {credentials: 'same-origin'});
+      if (r.status === 401) { location.href = BASE_URL + '/login'; return; }
       var d = await r.json();
       if (d.error) { alert(t('err_check') + d.error); }
       else if (!d.has_updates) { alert(t('no_updates')); }
       else {
-        latestShaToSave = d.latest_sha;
         var listDiv = document.getElementById('update-list');
         listDiv.innerHTML = d.commits.map(c =>
           '<div class="update-item"><div class="update-date">' + new Date(c.date).toLocaleString() + '</div>' +
@@ -725,7 +709,7 @@ function hideLoader() { document.getElementById('global-loader').style.display =
 
   document.getElementById('restart-btn').addEventListener('click', function(){
     if (!confirm('Restart awg0 and awg1?')) return;
-    var f = document.createElement('form'); f.method='POST'; f.action='/restart';
+    var f = document.createElement('form'); f.method='POST'; f.action = BASE_URL + '/restart';
     document.body.appendChild(f); f.submit();
   });
 
@@ -740,7 +724,7 @@ function hideLoader() { document.getElementById('global-loader').style.display =
 function closeServersModal() { document.getElementById('servers-modal').style.display = 'none'; }
 
 async function loadServers() {
-  var r = await fetch('/api/servers', {credentials:'same-origin'});
+  var r = await fetch(BASE_URL + '/api/servers', {credentials:'same-origin'});
   if (!r.ok) return;
   var d = await r.json();
   var list = document.getElementById('servers-list');
@@ -772,7 +756,7 @@ async function addServer() {
   var btn = document.getElementById('add-server-btn');
   btn.disabled = true; btn.textContent = '⏳ SSH...';
   try {
-    var r = await fetch('/api/servers/add', {
+    var r = await fetch(BASE_URL + '/api/servers/add', {
       method:'POST', credentials:'same-origin',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ip: ip, port: port, user: user, password: pass, name: name})
@@ -793,7 +777,7 @@ async function switchServer(sid, name) {
   if (!pass) return;
   showLoader('Переключение на ' + name + '... Это может занять 1-2 минуты. Не закрывайте страницу.');
   try {
-    var r = await fetch('/api/servers/switch/' + sid, {
+    var r = await fetch(BASE_URL + '/api/servers/switch/' + sid, {
       method:'POST', credentials:'same-origin',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({password: pass})
@@ -811,12 +795,11 @@ async function switchServer(sid, name) {
 
 async function deleteServer(sid) {
   if (!confirm('Удалить сервер из списка? (файлы не трогаем)')) return;
-  await fetch('/api/servers/' + sid, {method:'DELETE', credentials:'same-origin'});
+  await fetch(BASE_URL + '/api/servers/' + sid, {method:'DELETE', credentials:'same-origin'});
   await loadServers();
 }
 
 var _tableClients = [];
-
 function buildRow(c){
   var statusLabel = c.status;
   if (currentLang === 'ru') {
@@ -833,9 +816,9 @@ function buildRow(c){
     '<td>'+esc(c.tx)+'</td>'+
     '<td>'+esc(c.handshake)+'</td>'+
     '<td>'+
-      '<a href="/download/conf/'+encodeURIComponent(c.name)+'" class="btn">.conf</a>'+
-      '<a href="/download/vpn/'+encodeURIComponent(c.name)+'" class="btn">vpn://</a>'+
-      '<form method="post" action="/delete/'+encodeURIComponent(c.name)+'" onsubmit="return confirm(\''+(currentLang==='ru'?'Удалить клиента ':'Delete client ')+esc(c.name)+'?\')" style="display:inline">'+
+      '<a href="'+BASE_URL+'/download/conf/'+encodeURIComponent(c.name)+'" class="btn">.conf</a>'+
+      '<a href="'+BASE_URL+'/download/vpn/'+encodeURIComponent(c.name)+'" class="btn">vpn://</a>'+
+      '<form method="post" action="'+BASE_URL+'/delete/'+encodeURIComponent(c.name)+'" onsubmit="return confirm(\''+(currentLang==='ru'?'Удалить клиента ':'Delete client ')+esc(c.name)+'?\')" style="display:inline">'+
       '<button type="submit" class="btn danger">'+btnDelete+'</button></form>'+
     '</td></tr>';
 }
@@ -851,8 +834,8 @@ async function refresh(){
   if (updating) return;
   updating = true;
   try {
-    var r = await fetch('/api/clients', { credentials:'same-origin', cache:'no-store' });
-    if (r.status === 401) { location.href = '/login'; return; }
+    var r = await fetch(BASE_URL + '/api/clients', { credentials:'same-origin', cache:'no-store' });
+    if (r.status === 401) { location.href = BASE_URL + '/login'; return; }
     if (!r.ok) return;
     _tableClients = await r.json();
     var tb = document.getElementById('clients-tbody');
@@ -869,7 +852,7 @@ setTimeout(refresh, 500);
 
 def render_login(error=""):
     err = f'<div class="error">{error}</div>' if error else ""
-    return LOGIN_TEMPLATE.replace("__ERR__", err).replace("__LABEL__", SERVER_LABEL)
+    return LOGIN_TEMPLATE.replace("__ERR__", err).replace("__LABEL__", SERVER_LABEL).replace("__BASE__", BASE_URL)
 
 def render_page(clients, message="", error=""):
     rows = []
@@ -886,9 +869,9 @@ def render_page(clients, message="", error=""):
             f'<td>{c.get("tx","0 B")}</td>'
             f'<td>{c.get("handshake","никогда")}</td>'
             '<td>'
-            f'<a href="/download/conf/{n}" class="btn">.conf</a>'
-            f'<a href="/download/vpn/{n}" class="btn">vpn://</a>'
-            f'<form method="post" action="/delete/{n}" onsubmit="return confirm(\'Delete client {n}?\')" style="display:inline">'
+            f'<a href="{BASE_URL}/download/conf/{n}" class="btn">.conf</a>'
+            f'<a href="{BASE_URL}/download/vpn/{n}" class="btn">vpn://</a>'
+            f'<form method="post" action="{BASE_URL}/delete/{n}" onsubmit="return confirm(\'Delete client {n}?\')" style="display:inline">'
             '<button type="submit" class="btn danger">Удалить</button></form>'
             '</td></tr>'
         )
@@ -904,21 +887,22 @@ def render_page(clients, message="", error=""):
             .replace("__COUNT__", str(len(clients)))
             .replace("__ROWS__", "".join(rows))
             .replace("__TOTAL_RX__", trx)
-            .replace("__TOTAL_TX__", ttx))
+            .replace("__TOTAL_TX__", ttx)
+            .replace("__BASE__", BASE_URL))
 
 # ================ Routes ================
 app = FastAPI(docs_url=None, redoc_url=None)
 
 @app.exception_handler(RedirectToLogin)
 async def _rtl(request: Request, exc: RedirectToLogin):
-    return RedirectResponse("/login", status_code=303)
+    return RedirectResponse(f"{BASE_URL}/login", status_code=303)
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request, error: str = ""):
     try:
         _, p = load_credentials()
         if hmac.compare_digest(request.cookies.get(SESSION_COOKIE, ""), make_token(p)):
-            return RedirectResponse("/", status_code=303)
+            return RedirectResponse(f"{BASE_URL}/", status_code=303)
     except RuntimeError:
         pass
     return render_login(error)
@@ -928,17 +912,17 @@ async def login_submit(username: str = Form(...), password: str = Form(...)):
     try:
         u, p = load_credentials()
     except RuntimeError:
-        return RedirectResponse("/login?error=config+error", status_code=303)
+        return RedirectResponse(f"{BASE_URL}/login?error=config+error", status_code=303)
     if not (hmac.compare_digest(username, u) and hmac.compare_digest(password, p)):
-        return RedirectResponse("/login?error=Invalid+credentials", status_code=303)
-    r = RedirectResponse("/", status_code=303)
+        return RedirectResponse(f"{BASE_URL}/login?error=Invalid+credentials", status_code=303)
+    r = RedirectResponse(f"{BASE_URL}/", status_code=303)
     r.set_cookie(SESSION_COOKIE, make_token(p), max_age=SESSION_DAYS*86400,
                  httponly=True, secure=True, samesite="lax", path="/")
     return r
 
 @app.get("/logout")
 async def logout():
-    r = RedirectResponse("/login", status_code=303)
+    r = RedirectResponse(f"{BASE_URL}/login", status_code=303)
     r.delete_cookie(SESSION_COOKIE, path="/")
     return r
 
@@ -969,7 +953,6 @@ async def api_check_update(request: Request):
     result = await run_in_threadpool(check_github_updates)
     return JSONResponse(result)
 
-# ================ Servers API ================
 @app.get("/api/servers")
 async def api_servers_list(request: Request):
     current_user(request)
@@ -1040,22 +1023,21 @@ async def api_servers_switch(request: Request, sid: int):
         _notify(f"❌ <b>Ошибка переключения SERVER-B</b>\nНа: <code>{server['ip']}</code>\n{msg[:300]}")
         return JSONResponse({"error": msg}, status_code=500)
 
-# ================ Clients API ================
 @app.post("/create")
 async def create_client(request: Request, name: str = Form(...)):
     current_user(request)
     n = re.sub(r"[^a-zA-Z0-9_-]", "", name)
     if not n:
-        return RedirectResponse("/?error=Invalid+name", status_code=303)
+        return RedirectResponse(f"{BASE_URL}/?error=Invalid+name", status_code=303)
     try:
         subprocess.run([ADD_SCRIPT, n], input="y\n", capture_output=True, text=True, timeout=90, check=True)
         _notify(f"👤 <b>Новый клиент</b> (через панель)\nИмя: <code>{n}</code>")
-        return RedirectResponse(f"/?message=Client+{n}+created", status_code=303)
+        return RedirectResponse(f"{BASE_URL}/?message=Client+{n}+created", status_code=303)
     except subprocess.CalledProcessError as e:
         err = (e.stderr or e.stdout or "error").strip()[:200]
-        return RedirectResponse(f"/?error={err.replace(' ','+').replace(chr(10),' ')}", status_code=303)
+        return RedirectResponse(f"{BASE_URL}/?error={err.replace(' ','+').replace(chr(10),' ')}", status_code=303)
     except subprocess.TimeoutExpired:
-        return RedirectResponse("/?error=Timeout", status_code=303)
+        return RedirectResponse(f"{BASE_URL}/?error=Timeout", status_code=303)
 
 @app.post("/delete/{name}")
 async def delete_client(request: Request, name: str):
@@ -1064,10 +1046,10 @@ async def delete_client(request: Request, name: str):
     try:
         subprocess.run([REMOVE_SCRIPT, n], input="y\n", capture_output=True, text=True, timeout=60, check=True)
         _notify(f"🗑️ <b>Клиент удалён</b> (через панель)\nИмя: <code>{n}</code>")
-        return RedirectResponse(f"/?message=Client+{n}+deleted", status_code=303)
+        return RedirectResponse(f"{BASE_URL}/?message=Client+{n}+deleted", status_code=303)
     except subprocess.CalledProcessError as e:
         err = (e.stderr or e.stdout or "error").strip()[:200]
-        return RedirectResponse(f"/?error={err.replace(' ','+').replace(chr(10),' ')}", status_code=303)
+        return RedirectResponse(f"{BASE_URL}/?error={err.replace(' ','+').replace(chr(10),' ')}", status_code=303)
 
 @app.post("/restart")
 async def restart_tunnels(request: Request):
@@ -1082,7 +1064,7 @@ async def restart_tunnels(request: Request):
             res.append(f"{iface}: FAIL")
     msg = " | ".join(res)
     _notify(f"🔄 <b>Перезапуск</b>\n{msg}")
-    return RedirectResponse(f"/?message={msg.replace(' ','+')}", status_code=303)
+    return RedirectResponse(f"{BASE_URL}/?message={msg.replace(' ','+')}", status_code=303)
 
 @app.get("/download/conf/{name}")
 async def dl_conf(request: Request, name: str):
@@ -1101,7 +1083,16 @@ async def dl_vpn(request: Request, name: str):
     return FileResponse(p, media_type="text/plain", filename=f"{n}.vpn.txt")
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info",
-                access_log=False, server_header=False,
-                ssl_keyfile="/etc/amnezia-panel-ssl/key.pem",
-                ssl_certfile="/etc/amnezia-panel-ssl/cert.pem")
+    kwargs = {
+        "host": BIND_HOST,
+        "port": 8000,
+        "log_level": "info",
+        "access_log": False,
+        "server_header": False,
+    }
+    
+    if USE_SSL:
+        kwargs["ssl_keyfile"] = "/etc/amnezia-panel-ssl/key.pem"
+        kwargs["ssl_certfile"] = "/etc/amnezia-panel-ssl/cert.pem"
+
+    uvicorn.run(app, **kwargs)

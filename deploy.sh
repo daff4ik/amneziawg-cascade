@@ -134,6 +134,7 @@ SCRIPTS_TO_DOWNLOAD=(
     amnezia-notify-setup.sh
     amnezia-healthcheck.sh
     amnezia-traffic-collector.py
+    amnezia-panel-access.sh
 )
 
 # Массив зеркал для обхода блокировки GitHub Raw в РФ
@@ -570,7 +571,7 @@ if [[ "$INSTALL_PANEL" =~ ^[yYдД] ]]; then
         err "Не удалось скачать файлы панели ни с одного зеркала"
         exit 1
     fi
-        
+
     apt install -y -qq python3-venv
     python3 -m venv /opt/amnezia-panel-venv
     /opt/amnezia-panel-venv/bin/pip install --quiet --upgrade pip
