@@ -633,7 +633,8 @@ if systemctl is-active --quiet amnezia-panel; then
         
         P_DOMAIN=""
         if [[ "$P_HOST" == "127.0.0.1" ]] && command -v nginx >/dev/null 2>&1; then
-            NGINX_CONF=$(grep -rl "127.0.0.1:8000" /etc/nginx/sites-enabled/ 2>/dev/null | head -n 1 || true)
+            # Читаем файлы напрямую через *, чтобы обойти игнорирование symlink-ов
+            NGINX_CONF=$(grep -l "127.0.0.1:8000" /etc/nginx/sites-enabled/* 2>/dev/null | head -n 1 || true)
             if [[ -n "$NGINX_CONF" && -f "$NGINX_CONF" ]]; then
                 P_DOMAIN=$(awk '/server_name/ {print $2}' "$NGINX_CONF" 2>/dev/null | head -n 1 | tr -d '; \r\n')
             fi
@@ -644,19 +645,19 @@ if systemctl is-active --quiet amnezia-panel; then
         echo "  ВЕБ-ПАНЕЛЬ"
         echo "=============================================="
         if [[ "$P_HOST" == "127.0.0.1" && -n "$P_DOMAIN" ]]; then
-            echo "  Заглушка: https://$P_DOMAIN"
-            echo "  Панель:   https://$P_DOMAIN$P_BASE/"
-            echo "  (Прямой доступ по IP:8000 отключен)"
+            echo "  URL заглушка:         https://$P_DOMAIN"
+            echo "  URL веб панели:       https://$P_DOMAIN$P_BASE"
+            echo "  IP адрес веб панели : https://$RU_IP:8000 - не доступно - включен домен"
         else
-            echo "  URL:      https://$RU_IP:8000"
+            echo "  URL:                  https://$RU_IP:8000"
         fi
-        echo "  Логин:    $PANEL_USER"
+        echo "  Логин:                $PANEL_USER"
         if [[ "$AUTH_CHOICE" == "2" ]]; then
-            echo "  Пароль:   (задан вами при установке)"
+            echo "  Пароль:               (задан вами при установке)"
         elif [[ "$AUTH_CHOICE" == "keep" ]]; then
-            echo "  Пароль:   (не изменён, см. /etc/amnezia-panel.conf)"
+            echo "  Пароль:               (не изменён, см. /etc/amnezia-panel.conf)"
         else
-            echo "  Пароль:   $PANEL_PASS"
+            echo "  Пароль:               $PANEL_PASS"
             echo ""
             echo "  СОХРАНИТЕ ПАРОЛЬ! Больше он не будет показан."
         fi
@@ -665,7 +666,7 @@ if systemctl is-active --quiet amnezia-panel; then
         err "Веб-панель не запустилась"
         err "Проверьте: sudo journalctl -u amnezia-panel -n 30"
     fi
-
+    
     rm -f /tmp/amnezia-panel.py /tmp/amnezia-panel.service
 fi
 
@@ -723,7 +724,6 @@ EOM
 fi
 
 if [[ "$INSTALL_PANEL" =~ ^[yYдД] ]]; then
-    echo "=============================================="
     # --- БРОНЕБОЙНЫЙ ПАРСИНГ STEALTH-РЕЖИМА ---
     P_CONF="/etc/amnezia-panel.conf"
     P_HOST=$(awk -F'=' '/^host/ {print $2}' "$P_CONF" 2>/dev/null | tr -d ' \r\n')
@@ -733,16 +733,17 @@ if [[ "$INSTALL_PANEL" =~ ^[yYдД] ]]; then
     
     P_DOMAIN=""
     if [[ "$P_HOST" == "127.0.0.1" ]] && command -v nginx >/dev/null 2>&1; then
-        NGINX_CONF=$(grep -rl "127.0.0.1:8000" /etc/nginx/sites-enabled/ 2>/dev/null | head -n 1 || true)
+        NGINX_CONF=$(grep -l "127.0.0.1:8000" /etc/nginx/sites-enabled/* 2>/dev/null | head -n 1 || true)
         if [[ -n "$NGINX_CONF" && -f "$NGINX_CONF" ]]; then
             P_DOMAIN=$(awk '/server_name/ {print $2}' "$NGINX_CONF" 2>/dev/null | head -n 1 | tr -d '; \r\n')
         fi
     fi
 
+    echo "=============================================="
     if [[ "$P_HOST" == "127.0.0.1" && -n "$P_DOMAIN" ]]; then
-        echo "Сайт-заглушка:       https://$P_DOMAIN"
-        echo "Веб-панель (скрытая): https://$P_DOMAIN$P_BASE/"
-        echo "Доступ по IP:8000:   Отключен (Stealth-режим)"
+        echo "URL заглушка:         https://$P_DOMAIN"
+        echo "URL веб панели:       https://$P_DOMAIN$P_BASE"
+        echo "IP адрес веб панели : https://$RU_IP:8000 - не доступно - включен домен"
     else
         echo "Веб-панель:          https://$RU_IP:8000"
     fi
