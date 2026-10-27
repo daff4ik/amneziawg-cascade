@@ -420,9 +420,15 @@ def enrich(clients):
             pass
     for c in clients:
         st = db_stats.get(c["pubkey"], {})
-        c["rx"] = fmt_bytes(st.get("total_rx", 0))
-        c["tx"] = fmt_bytes(st.get("total_tx", 0))
-        c["handshake"] = fmt_handshake(st.get("last_handshake", 0))
+        # Передаем сырые байты для математически точной JS-сортировки
+        c["rx_bytes"] = st.get("total_rx", 0)
+        c["tx_bytes"] = st.get("total_tx", 0)
+        c["handshake_ts"] = st.get("last_handshake", 0)
+        
+        # Передаем форматированные строки для отображения
+        c["rx"] = fmt_bytes(c["rx_bytes"])
+        c["tx"] = fmt_bytes(c["tx_bytes"])
+        c["handshake"] = fmt_handshake(c["handshake_ts"])
         c["status"] = live_status.get(c["pubkey"], "NEVER" if not st else "OFFLINE")
     return clients
 
@@ -505,6 +511,8 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
   table{width:100%;border-collapse:collapse}
   th,td{padding:.75em .5em;text-align:left;border-bottom:1px solid var(--border);font-size:.9em}
   th{font-size:.72em;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);font-weight:600}
+  th.sortable{cursor:pointer; user-select:none;}
+  th.sortable:hover{color:var(--accent);}
   td.s-online{color:var(--online);font-weight:600}
   td.s-offline{color:var(--offline)}
   td.s-never{color:var(--never)}
@@ -568,9 +576,13 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
     <h3><span data-i18n="clients_title">👥 Клиенты</span> (<span id="clients-count">__COUNT__</span>)</h3>
     <div class="refresh-indicator"><span data-i18n="updated">Обновлено:</span> <span id="last-update">--</span></div>
     <table><thead><tr>
-      <th data-i18n="th_name">Имя</th><th data-i18n="th_ip">IP</th><th data-i18n="th_status">Статус</th>
-      <th data-i18n="th_rx">RX (всего)</th><th data-i18n="th_tx">TX (всего)</th>
-      <th data-i18n="th_handshake">Последний handshake</th><th data-i18n="th_actions">Действия</th>
+      <th class="sortable" onclick="sortTable('name')" title="Сортировка"><span data-i18n="th_name">Имя</span> ↕</th>
+      <th class="sortable" onclick="sortTable('ip')" title="Сортировка"><span data-i18n="th_ip">IP</span> ↕</th>
+      <th class="sortable" onclick="sortTable('status')" title="Сортировка"><span data-i18n="th_status">Статус</span> ↕</th>
+      <th class="sortable" onclick="sortTable('rx_bytes')" title="Сортировка"><span data-i18n="th_rx">RX (всего)</span> ↕</th>
+      <th class="sortable" onclick="sortTable('tx_bytes')" title="Сортировка"><span data-i18n="th_tx">TX (всего)</span> ↕</th>
+      <th class="sortable" onclick="sortTable('handshake_ts')" title="Сортировка"><span data-i18n="th_handshake">Последний handshake</span> ↕</th>
+      <th data-i18n="th_actions">Действия</th>
     </tr></thead>
     <tbody id="clients-tbody">__ROWS__</tbody></table>
   </div>
@@ -613,6 +625,11 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
 <script>
 var currentLang = localStorage.getItem('lang') || 'ru';
 var BASE_URL = "__BASE__";
+var _tableClients = [];
+
+// Переменные для динамической сортировки
+var sortCol = 'name';
+var sortDir = 1;
 
 const i18n = {
   ru: {
@@ -799,7 +816,6 @@ async function deleteServer(sid) {
   await loadServers();
 }
 
-var _tableClients = [];
 function buildRow(c){
   var statusLabel = c.status;
   if (currentLang === 'ru') {
@@ -823,6 +839,35 @@ function buildRow(c){
     '</td></tr>';
 }
 
+function sortTable(col) {
+  if (sortCol === col) {
+    sortDir *= -1; // Меняем направление сортировки
+  } else {
+    sortCol = col;
+    sortDir = 1;
+  }
+  applySort();
+}
+
+function applySort() {
+  if (!_tableClients.length) return;
+  _tableClients.sort(function(a, b) {
+    var vA = a[sortCol]; 
+    var vB = b[sortCol];
+    
+    // Специальная логика для IP адресов
+    if (sortCol === 'ip') {
+      vA = a.ip ? a.ip.split('.').reduce((acc, val) => (acc << 8) + parseInt(val, 10), 0) : 0;
+      vB = b.ip ? b.ip.split('.').reduce((acc, val) => (acc << 8) + parseInt(val, 10), 0) : 0;
+      return (vA - vB) * sortDir;
+    }
+    
+    if (typeof vA === 'string') return vA.localeCompare(vB) * sortDir;
+    return (vA - vB) * sortDir;
+  });
+  refreshTableOnly();
+}
+
 function refreshTableOnly() {
   if (!_tableClients.length) return;
   var tb = document.getElementById('clients-tbody');
@@ -838,10 +883,14 @@ async function refresh(){
     if (r.status === 401) { location.href = BASE_URL + '/login'; return; }
     if (!r.ok) return;
     _tableClients = await r.json();
-    var tb = document.getElementById('clients-tbody');
-    tb.innerHTML = _tableClients.length === 0
-      ? '<tr><td colspan="7" class="empty">'+(currentLang==='ru'?'Нет клиентов':'No clients yet')+'</td></tr>'
-      : _tableClients.map(buildRow).join('');
+    
+    // Применяем текущую сортировку к новым данным
+    applySort();
+    
+    if (_tableClients.length === 0) {
+       document.getElementById('clients-tbody').innerHTML = '<tr><td colspan="7" class="empty">'+(currentLang==='ru'?'Нет клиентов':'No clients yet')+'</td></tr>';
+    }
+    
     document.getElementById('clients-count').textContent = _tableClients.length;
     document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
   } catch(e) {} finally { updating = false; }
@@ -855,6 +904,7 @@ def render_login(error=""):
     return LOGIN_TEMPLATE.replace("__ERR__", err).replace("__LABEL__", SERVER_LABEL).replace("__BASE__", BASE_URL)
 
 def render_page(clients, message="", error=""):
+    # Первоначальный статический рендер (до срабатывания JS)
     rows = []
     for c in clients:
         st = c.get("status", "NEVER")

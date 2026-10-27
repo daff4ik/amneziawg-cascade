@@ -61,16 +61,34 @@ if [[ $UPDATE_MODE -eq 1 ]]; then
     RU_IP=$(hostname -I | awk '{print $1}')
     [[ -z "$RU_IP" ]] && { err "Не удалось определить IP этого сервера"; exit 1; }
 
-    # Имя сервера из существующей панели
-    SERVER_NAME=""
-    if [[ -f /opt/amnezia-panel.py ]]; then
-        SERVER_NAME=$(grep -oP 'SERVER_LABEL\s*=\s*"\K[^"]+' /opt/amnezia-panel.py | head -1 || echo "")
+    # Пытаемся вытащить существующее имя сервера из скрипта amnezia-add-client.sh
+    # (потому что туда оно уже было жестко вшито при прошлой установке)
+    OLD_SERVER_NAME=""
+    if [[ -f /usr/local/bin/amnezia-add-client.sh ]]; then
+        OLD_SERVER_NAME=$(grep -oP '^SERVER_NAME="\K[^"]+' /usr/local/bin/amnezia-add-client.sh | head -1 || echo "")
     fi
     
-    if [[ -z "$SERVER_NAME" || "$SERVER_NAME" == "__SERVER_LABEL__" || "$SERVER_NAME" == "Ваш лейбл" ]]; then
-        read -p "Название сервера для AmneziaVPN (например, 'RuGer1'): " SERVER_NAME
-        SERVER_NAME="${SERVER_NAME:-AmneziaVPN}"
+    # Если в скрипте не нашли, ищем в панели
+    if [[ -z "$OLD_SERVER_NAME" || "$OLD_SERVER_NAME" == "__SERVER_NAME__" ]] && [[ -f /opt/amnezia-panel.py ]]; then
+        OLD_SERVER_NAME=$(grep -oP 'SERVER_LABEL\s*=\s*"\K[^"]+' /opt/amnezia-panel.py | head -1 || echo "")
     fi
+
+    # Спрашиваем пользователя
+    if [[ -n "$OLD_SERVER_NAME" && "$OLD_SERVER_NAME" != "__SERVER_LABEL__" && "$OLD_SERVER_NAME" != "__SERVER_NAME__" ]]; then
+        echo "Текущее имя сервера: [$OLD_SERVER_NAME]"
+        read -p "Сохранить текущее имя сервера? (y/n) [y]: " KEEP_NAME
+        KEEP_NAME="${KEEP_NAME:-y}"
+        if [[ "$KEEP_NAME" =~ ^[yYдД] ]]; then
+            SERVER_NAME="$OLD_SERVER_NAME"
+        else
+            read -p "Введите новое имя сервера: " SERVER_NAME
+        fi
+    else
+        # Если старое имя вообще не найдено
+        read -p "Название сервера для AmneziaVPN (например, 'LALLUZA'): " SERVER_NAME
+    fi
+    
+    SERVER_NAME="${SERVER_NAME:-AmneziaVPN}"
 
     if [[ -f /etc/amnezia-panel.conf ]]; then
         read -p "Веб-панель уже установлена. Обновить её? (y/n) [y]: " INSTALL_PANEL
@@ -683,26 +701,35 @@ EOM
 fi
 
 if [[ "$INSTALL_PANEL" =~ ^[yYдД] ]]; then
+    echo "=============================================="
     echo "Веб-панель:          https://$RU_IP:8000"
     echo "Учётные данные:      /etc/amnezia-panel.conf"
+    echo "=============================================="
     echo ""
-fi
-
-echo "Приятного использования!"
-
-# Предложение установить Stealth-режим
-if [[ "$INSTALL_PANEL" =~ ^[yYдД] && $UPDATE_MODE -eq 0 ]]; then
-    echo ""
-    say "Stealth-режим (Опционально)"
-    echo "Вы можете скрыть админ-панель за 8-битной страницей-заглушкой."
-    echo "ВНИМАНИЕ: Для этого у вас уже должен быть домен (субдомен), привязанный к IP этого сервера!"
-    read -p "Активировать Stealth-режим сейчас? (y/n) [n]: " ASK_STEALTH
-    if [[ "$ASK_STEALTH" =~ ^[yYдД] ]]; then
-        if curl -fsSL --connect-timeout 5 "https://raw.githubusercontent.com/daff4ik/amneziawg-cascade/main/stealth-setup.sh" -o /tmp/stealth-setup.sh || \
-           curl -fsSL --connect-timeout 5 "https://ghproxy.net/https://raw.githubusercontent.com/daff4ik/amneziawg-cascade/main/stealth-setup.sh" -o /tmp/stealth-setup.sh; then
-            bash /tmp/stealth-setup.sh
+    
+    # Предложение установить Stealth-режим только при первой установке
+    if [[ $UPDATE_MODE -eq 0 ]]; then
+        say "Stealth-режим (Опционально)"
+        echo "Для защиты от сканирования вы можете скрыть веб-панель за сайтом-заглушкой (Stealth)."
+        echo "ВНИМАНИЕ: У вас должен быть домен, привязанный к IP этого сервера."
+        echo "Бесплатный домен можно получить на https://freedns.afraid.org/"
+        echo ""
+        read -p "Активировать Stealth-режим сейчас? (y/n) [n]: " ASK_STEALTH
+        if [[ "$ASK_STEALTH" =~ ^[yYдД] ]]; then
+            echo "Скачивание установщика заглушки..."
+            if curl -fsSL --connect-timeout 5 "$REPO_URL/stealth-setup.sh" -o /tmp/stealth-setup.sh || \
+               curl -fsSL --connect-timeout 5 "https://ghproxy.net/$REPO_URL/stealth-setup.sh" -o /tmp/stealth-setup.sh || \
+               curl -fsSL --connect-timeout 5 "https://mirror.ghproxy.com/$REPO_URL/stealth-setup.sh" -o /tmp/stealth-setup.sh; then
+                bash /tmp/stealth-setup.sh
+            else
+                err "Не удалось скачать stealth-setup.sh. Заглушку можно будет настроить позже вручную, следуя инструкции в README."
+            fi
         else
-            err "Не удалось скачать stealth-setup.sh. Вы можете запустить его позже вручную."
+            echo "Stealth-режим пропущен. Панель доступна по IP адресу."
+            echo "Для последующей настройки обратитесь к README.md."
         fi
     fi
 fi
+
+echo ""
+echo "Приятного использования!"
