@@ -630,9 +630,9 @@ if systemctl is-active --quiet amnezia-panel; then
         P_BASE=$(grep -oP '^base_url\s*=\s*\K.*' "$P_CONF" 2>/dev/null | tr -d ' ' | tr -d '\r' | tr -d '\n' || echo "")
         P_DOMAIN=""
         if [[ "$P_HOST" == "127.0.0.1" ]] && command -v nginx >/dev/null 2>&1; then
-            NGINX_CONF=$(grep -rl "127.0.0.1:8000" /etc/nginx/sites-enabled/ 2>/dev/null | head -1)
-            if [[ -n "$NGINX_CONF" ]]; then
-                P_DOMAIN=$(grep -oP 'server_name\s+\K[^;]+' "$NGINX_CONF" | head -1 | tr -d ' ' | tr -d '\r' | tr -d '\n')
+            NGINX_CONF=$(grep -rl "127.0.0.1:8000" /etc/nginx/sites-enabled/ 2>/dev/null | head -1 || true)
+            if [[ -n "$NGINX_CONF" && -f "$NGINX_CONF" ]]; then
+                P_DOMAIN=$(grep -oP 'server_name\s+\K[^;]+' "$NGINX_CONF" 2>/dev/null | head -1 | tr -d ' ' | tr -d '\r' | tr -d '\n' || true)
             fi
         fi
 
@@ -643,7 +643,7 @@ if systemctl is-active --quiet amnezia-panel; then
         if [[ "$P_HOST" == "127.0.0.1" && -n "$P_DOMAIN" ]]; then
             echo "  Заглушка: https://$P_DOMAIN"
             echo "  Панель:   https://$P_DOMAIN$P_BASE/"
-            echo "  (Прямой доступ по IP:$AWG_PANEL_PORT отключен)"
+            echo "  (Прямой доступ по IP:8000 отключен)"
         else
             echo "  URL:      https://$RU_IP:8000"
         fi
@@ -727,9 +727,9 @@ if [[ "$INSTALL_PANEL" =~ ^[yYдД] ]]; then
     P_BASE=$(grep -oP '^base_url\s*=\s*\K.*' "$P_CONF" 2>/dev/null | tr -d ' ' | tr -d '\r' | tr -d '\n' || echo "")
     P_DOMAIN=""
     if [[ "$P_HOST" == "127.0.0.1" ]] && command -v nginx >/dev/null 2>&1; then
-        NGINX_CONF=$(grep -rl "127.0.0.1:8000" /etc/nginx/sites-enabled/ 2>/dev/null | head -1)
-        if [[ -n "$NGINX_CONF" ]]; then
-            P_DOMAIN=$(grep -oP 'server_name\s+\K[^;]+' "$NGINX_CONF" | head -1 | tr -d ' ' | tr -d '\r' | tr -d '\n')
+        NGINX_CONF=$(grep -rl "127.0.0.1:8000" /etc/nginx/sites-enabled/ 2>/dev/null | head -1 || true)
+        if [[ -n "$NGINX_CONF" && -f "$NGINX_CONF" ]]; then
+            P_DOMAIN=$(grep -oP 'server_name\s+\K[^;]+' "$NGINX_CONF" 2>/dev/null | head -1 | tr -d ' ' | tr -d '\r' | tr -d '\n' || true)
         fi
     fi
 
