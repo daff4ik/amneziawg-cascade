@@ -621,13 +621,29 @@ EOF
     systemctl restart amnezia-panel
     sleep 2
 
-    if systemctl is-active --quiet amnezia-panel; then
+if systemctl is-active --quiet amnezia-panel; then
         ok "Веб-панель запущена"
+        
+        # --- ДИНАМИЧЕСКОЕ ОПРЕДЕЛЕНИЕ STEALTH-РЕЖИМА ---
+        P_CONF="/etc/amnezia-panel.conf"
+        P_HOST=$(grep -oP '^host=\K.*' "$P_CONF" 2>/dev/null || echo "0.0.0.0")
+        P_BASE=$(grep -oP '^base_url=\K.*' "$P_CONF" 2>/dev/null || echo "")
+        P_DOMAIN=""
+        if [[ "$P_HOST" == "127.0.0.1" ]] && command -v nginx >/dev/null 2>&1; then
+            P_DOMAIN=$(grep -rl "127.0.0.1:8000" /etc/nginx/sites-enabled/ 2>/dev/null | head -1 | xargs grep -hoP 'server_name\s+\K[^;]+' 2>/dev/null | head -1 || echo "")
+        fi
+
         echo ""
         echo "=============================================="
         echo "  ВЕБ-ПАНЕЛЬ"
         echo "=============================================="
-        echo "  URL:      https://$RU_IP:8000"
+        if [[ "$P_HOST" == "127.0.0.1" && -n "$P_DOMAIN" ]]; then
+            echo "  Заглушка: https://$P_DOMAIN"
+            echo "  Панель:   https://$P_DOMAIN$P_BASE/"
+            echo "  (Прямой доступ по IP:$AWG_PANEL_PORT отключен)"
+        else
+            echo "  URL:      https://$RU_IP:8000"
+        fi
         echo "  Логин:    $PANEL_USER"
         if [[ "$AUTH_CHOICE" == "2" ]]; then
             echo "  Пароль:   (задан вами при установке)"
@@ -702,7 +718,22 @@ fi
 
 if [[ "$INSTALL_PANEL" =~ ^[yYдД] ]]; then
     echo "=============================================="
-    echo "Веб-панель:          https://$RU_IP:8000"
+    # --- ДИНАМИЧЕСКОЕ ОПРЕДЕЛЕНИЕ STEALTH-РЕЖИМА ---
+    P_CONF="/etc/amnezia-panel.conf"
+    P_HOST=$(grep -oP '^host=\K.*' "$P_CONF" 2>/dev/null || echo "0.0.0.0")
+    P_BASE=$(grep -oP '^base_url=\K.*' "$P_CONF" 2>/dev/null || echo "")
+    P_DOMAIN=""
+    if [[ "$P_HOST" == "127.0.0.1" ]] && command -v nginx >/dev/null 2>&1; then
+        P_DOMAIN=$(grep -rl "127.0.0.1:8000" /etc/nginx/sites-enabled/ 2>/dev/null | head -1 | xargs grep -hoP 'server_name\s+\K[^;]+' 2>/dev/null | head -1 || echo "")
+    fi
+
+    if [[ "$P_HOST" == "127.0.0.1" && -n "$P_DOMAIN" ]]; then
+        echo "Сайт-заглушка:       https://$P_DOMAIN"
+        echo "Веб-панель (скрытая): https://$P_DOMAIN$P_BASE/"
+        echo "Доступ по IP:8000:   Отключен (Stealth-режим)"
+    else
+        echo "Веб-панель:          https://$RU_IP:8000"
+    fi
     echo "Учётные данные:      /etc/amnezia-panel.conf"
     echo "=============================================="
     echo ""
