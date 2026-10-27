@@ -624,13 +624,16 @@ EOF
 if systemctl is-active --quiet amnezia-panel; then
         ok "Веб-панель запущена"
         
-        # --- ДИНАМИЧЕСКОЕ ОПРЕДЕЛЕНИЕ STEALTH-РЕЖИМА ---
+        # --- БРОНЕБОЙНЫЙ ПАРСИНГ STEALTH-РЕЖИМА ---
         P_CONF="/etc/amnezia-panel.conf"
-        P_HOST=$(grep -oP '^host=\K.*' "$P_CONF" 2>/dev/null || echo "0.0.0.0")
-        P_BASE=$(grep -oP '^base_url=\K.*' "$P_CONF" 2>/dev/null || echo "")
+        P_HOST=$(grep -oP '^host\s*=\s*\K.*' "$P_CONF" 2>/dev/null | tr -d ' ' | tr -d '\r' | tr -d '\n' || echo "0.0.0.0")
+        P_BASE=$(grep -oP '^base_url\s*=\s*\K.*' "$P_CONF" 2>/dev/null | tr -d ' ' | tr -d '\r' | tr -d '\n' || echo "")
         P_DOMAIN=""
         if [[ "$P_HOST" == "127.0.0.1" ]] && command -v nginx >/dev/null 2>&1; then
-            P_DOMAIN=$(grep -rl "127.0.0.1:8000" /etc/nginx/sites-enabled/ 2>/dev/null | head -1 | xargs grep -hoP 'server_name\s+\K[^;]+' 2>/dev/null | head -1 || echo "")
+            NGINX_CONF=$(grep -rl "127.0.0.1:8000" /etc/nginx/sites-enabled/ 2>/dev/null | head -1)
+            if [[ -n "$NGINX_CONF" ]]; then
+                P_DOMAIN=$(grep -oP 'server_name\s+\K[^;]+' "$NGINX_CONF" | head -1 | tr -d ' ' | tr -d '\r' | tr -d '\n')
+            fi
         fi
 
         echo ""
@@ -718,13 +721,16 @@ fi
 
 if [[ "$INSTALL_PANEL" =~ ^[yYдД] ]]; then
     echo "=============================================="
-    # --- ДИНАМИЧЕСКОЕ ОПРЕДЕЛЕНИЕ STEALTH-РЕЖИМА ---
+    # --- БРОНЕБОЙНЫЙ ПАРСИНГ STEALTH-РЕЖИМА ---
     P_CONF="/etc/amnezia-panel.conf"
-    P_HOST=$(grep -oP '^host=\K.*' "$P_CONF" 2>/dev/null || echo "0.0.0.0")
-    P_BASE=$(grep -oP '^base_url=\K.*' "$P_CONF" 2>/dev/null || echo "")
+    P_HOST=$(grep -oP '^host\s*=\s*\K.*' "$P_CONF" 2>/dev/null | tr -d ' ' | tr -d '\r' | tr -d '\n' || echo "0.0.0.0")
+    P_BASE=$(grep -oP '^base_url\s*=\s*\K.*' "$P_CONF" 2>/dev/null | tr -d ' ' | tr -d '\r' | tr -d '\n' || echo "")
     P_DOMAIN=""
     if [[ "$P_HOST" == "127.0.0.1" ]] && command -v nginx >/dev/null 2>&1; then
-        P_DOMAIN=$(grep -rl "127.0.0.1:8000" /etc/nginx/sites-enabled/ 2>/dev/null | head -1 | xargs grep -hoP 'server_name\s+\K[^;]+' 2>/dev/null | head -1 || echo "")
+        NGINX_CONF=$(grep -rl "127.0.0.1:8000" /etc/nginx/sites-enabled/ 2>/dev/null | head -1)
+        if [[ -n "$NGINX_CONF" ]]; then
+            P_DOMAIN=$(grep -oP 'server_name\s+\K[^;]+' "$NGINX_CONF" | head -1 | tr -d ' ' | tr -d '\r' | tr -d '\n')
+        fi
     fi
 
     if [[ "$P_HOST" == "127.0.0.1" && -n "$P_DOMAIN" ]]; then
@@ -741,7 +747,7 @@ if [[ "$INSTALL_PANEL" =~ ^[yYдД] ]]; then
     # Предложение установить Stealth-режим только при первой установке
     if [[ $UPDATE_MODE -eq 0 ]]; then
         say "Stealth-режим (Опционально)"
-        echo "Для защиты от сканирования вы можете скрыть веб-панель за сайтом-заглушкой (Stealth)."
+        echo "Для защиты от сканирования вы можете скрыть веб-панель за сайтом-заглушкой."
         echo "ВНИМАНИЕ: У вас должен быть домен, привязанный к IP этого сервера."
         echo "Бесплатный домен можно получить на https://freedns.afraid.org/"
         echo ""
@@ -753,7 +759,7 @@ if [[ "$INSTALL_PANEL" =~ ^[yYдД] ]]; then
                curl -fsSL --connect-timeout 5 "https://mirror.ghproxy.com/$REPO_URL/stealth-setup.sh" -o /tmp/stealth-setup.sh; then
                 bash /tmp/stealth-setup.sh
             else
-                err "Не удалось скачать stealth-setup.sh. Заглушку можно будет настроить позже вручную, следуя инструкции в README."
+                err "Не удалось скачать stealth-setup.sh. Заглушку можно настроить позже вручную, следуя инструкции в README."
             fi
         else
             echo "Stealth-режим пропущен. Панель доступна по IP адресу."
