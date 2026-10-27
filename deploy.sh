@@ -626,13 +626,16 @@ if systemctl is-active --quiet amnezia-panel; then
         
         # --- БРОНЕБОЙНЫЙ ПАРСИНГ STEALTH-РЕЖИМА ---
         P_CONF="/etc/amnezia-panel.conf"
-        P_HOST=$(grep -oP '^host\s*=\s*\K.*' "$P_CONF" 2>/dev/null | tr -d ' ' | tr -d '\r' | tr -d '\n' || echo "0.0.0.0")
-        P_BASE=$(grep -oP '^base_url\s*=\s*\K.*' "$P_CONF" 2>/dev/null | tr -d ' ' | tr -d '\r' | tr -d '\n' || echo "")
+        P_HOST=$(awk -F'=' '/^host/ {print $2}' "$P_CONF" 2>/dev/null | tr -d ' \r\n')
+        [[ -z "$P_HOST" ]] && P_HOST="0.0.0.0"
+        
+        P_BASE=$(awk -F'=' '/^base_url/ {print $2}' "$P_CONF" 2>/dev/null | tr -d ' \r\n')
+        
         P_DOMAIN=""
         if [[ "$P_HOST" == "127.0.0.1" ]] && command -v nginx >/dev/null 2>&1; then
-            NGINX_CONF=$(grep -rl "127.0.0.1:8000" /etc/nginx/sites-enabled/ 2>/dev/null | head -1 || true)
+            NGINX_CONF=$(grep -rl "127.0.0.1:8000" /etc/nginx/sites-enabled/ 2>/dev/null | head -n 1 || true)
             if [[ -n "$NGINX_CONF" && -f "$NGINX_CONF" ]]; then
-                P_DOMAIN=$(grep -oP 'server_name\s+\K[^;]+' "$NGINX_CONF" 2>/dev/null | head -1 | tr -d ' ' | tr -d '\r' | tr -d '\n' || true)
+                P_DOMAIN=$(awk '/server_name/ {print $2}' "$NGINX_CONF" 2>/dev/null | head -n 1 | tr -d '; \r\n')
             fi
         fi
 
@@ -723,13 +726,16 @@ if [[ "$INSTALL_PANEL" =~ ^[yYдД] ]]; then
     echo "=============================================="
     # --- БРОНЕБОЙНЫЙ ПАРСИНГ STEALTH-РЕЖИМА ---
     P_CONF="/etc/amnezia-panel.conf"
-    P_HOST=$(grep -oP '^host\s*=\s*\K.*' "$P_CONF" 2>/dev/null | tr -d ' ' | tr -d '\r' | tr -d '\n' || echo "0.0.0.0")
-    P_BASE=$(grep -oP '^base_url\s*=\s*\K.*' "$P_CONF" 2>/dev/null | tr -d ' ' | tr -d '\r' | tr -d '\n' || echo "")
+    P_HOST=$(awk -F'=' '/^host/ {print $2}' "$P_CONF" 2>/dev/null | tr -d ' \r\n')
+    [[ -z "$P_HOST" ]] && P_HOST="0.0.0.0"
+    
+    P_BASE=$(awk -F'=' '/^base_url/ {print $2}' "$P_CONF" 2>/dev/null | tr -d ' \r\n')
+    
     P_DOMAIN=""
     if [[ "$P_HOST" == "127.0.0.1" ]] && command -v nginx >/dev/null 2>&1; then
-        NGINX_CONF=$(grep -rl "127.0.0.1:8000" /etc/nginx/sites-enabled/ 2>/dev/null | head -1 || true)
+        NGINX_CONF=$(grep -rl "127.0.0.1:8000" /etc/nginx/sites-enabled/ 2>/dev/null | head -n 1 || true)
         if [[ -n "$NGINX_CONF" && -f "$NGINX_CONF" ]]; then
-            P_DOMAIN=$(grep -oP 'server_name\s+\K[^;]+' "$NGINX_CONF" 2>/dev/null | head -1 | tr -d ' ' | tr -d '\r' | tr -d '\n' || true)
+            P_DOMAIN=$(awk '/server_name/ {print $2}' "$NGINX_CONF" 2>/dev/null | head -n 1 | tr -d '; \r\n')
         fi
     fi
 
