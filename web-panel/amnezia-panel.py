@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""AmneziaWG Web Panel — с управлением, переключением SERVER B и Stealth-режимом."""
+"""AmneziaWG Web Panel — Optimized, Mobile-First, Secure"""
 import os
 import re
-import io
 import hmac
 import hashlib
-import secrets
 import sqlite3
 import subprocess
 import time
@@ -14,8 +12,8 @@ import urllib.request
 import json
 import datetime
 import shutil
-from fastapi import FastAPI, HTTPException, Depends, Form, Request
-from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse, Response, JSONResponse
+from fastapi import FastAPI, HTTPException, Form, Request
+from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse, JSONResponse
 from starlette.concurrency import run_in_threadpool
 import uvicorn
 
@@ -76,8 +74,9 @@ def current_user(request: Request) -> str:
     except RuntimeError:
         raise HTTPException(500, "config error")
     t = request.cookies.get(SESSION_COOKIE, "")
+    # Защита от timing attacks
     if not hmac.compare_digest(t, make_token(p)):
-        if request.url.path.startswith("/api/"):
+        if request.url.path.startswith("/api/") or request.url.path.startswith("/download/"):
             raise HTTPException(401, "Unauthorized")
         raise RedirectToLogin()
     return u
@@ -420,12 +419,11 @@ def enrich(clients):
             pass
     for c in clients:
         st = db_stats.get(c["pubkey"], {})
-        # Передаем сырые байты для математически точной JS-сортировки
+        # Отдаем сырые байты для сортировки в JS
         c["rx_bytes"] = st.get("total_rx", 0)
         c["tx_bytes"] = st.get("total_tx", 0)
         c["handshake_ts"] = st.get("last_handshake", 0)
         
-        # Передаем форматированные строки для отображения
         c["rx"] = fmt_bytes(c["rx_bytes"])
         c["tx"] = fmt_bytes(c["tx_bytes"])
         c["handshake"] = fmt_handshake(c["handshake_ts"])
@@ -448,494 +446,621 @@ def total_traffic(clients):
             pass
     return fmt_bytes(rx), fmt_bytes(tx)
 
-# ================ HTML ================
-LOGIN_TEMPLATE = r"""<!DOCTYPE html>
-<html lang="ru" data-theme="light"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Login</title>
-<style>
-  :root{--bg:#f2f2f7;--card:#fff;--text:#1d1d1f;--muted:#6e6e73;--border:#d2d2d7;--accent:#0071e3;--err-bg:#ffe5e5;--err-text:#a00;--header-bg:#1d1d1f;--header-text:#fff}
-  html[data-theme=dark]{--bg:#1c1c1e;--card:#2c2c2e;--text:#f5f5f7;--border:#48484a;--accent:#0a84ff;--err-bg:#3a1a1a;--err-text:#ff6961;--header-bg:#000;--header-text:#fff}
-  *{box-sizing:border-box} body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;margin:0;background:var(--bg);color:var(--text);min-height:100vh;display:flex;flex-direction:column}
-  header{background:var(--header-bg);color:var(--header-text);padding:1em 2em}
-  header h1{margin:0;font-size:1.15em;font-weight:600}
-  header .sub{font-size:.85em;opacity:.7}
-  .wrap{flex:1;display:flex;align-items:center;justify-content:center;padding:2em 1em}
-  .card{background:var(--card);border-radius:12px;padding:2em;max-width:400px;width:100%;box-shadow:0 4px 20px rgba(0,0,0,.08)}
-  h2{margin:0 0 1.2em;text-align:center;font-size:1.2em}
-  input{width:100%;padding:.85em 1em;border:1px solid var(--border);border-radius:8px;font-size:1em;margin-bottom:.9em;background:var(--card);color:var(--text)}
-  input:focus{outline:none;border-color:var(--accent)}
-  button{width:100%;padding:.9em;border:none;border-radius:8px;background:var(--accent);color:#fff;font-size:1em;font-weight:500;cursor:pointer}
-  .error{background:var(--err-bg);color:var(--err-text);padding:.8em;border-radius:8px;margin-bottom:1em;text-align:center;font-size:.9em}
-</style></head><body>
-<header><h1>🛡️ AmneziaWG Panel</h1><div class="sub">__LABEL__</div></header>
-<div class="wrap"><div class="card"><h2>Вход</h2>__ERR__
-<form method="post" action="__BASE__/login">
-  <input type="text" name="username" placeholder="Username" required autofocus>
-  <input type="password" name="password" placeholder="Password" required>
-  <button type="submit">Войти</button>
-</form></div></div>
-</body></html>"""
+# ================ HTML Templates ================
 
-PAGE_TEMPLATE = r"""<!DOCTYPE html>
-<html lang="ru" data-theme="light"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>AmneziaWG Panel</title>
+LOGIN_TEMPLATE = r"""<!DOCTYPE html>
+<html lang="ru" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>AmneziaWG Panel - Login</title>
 <style>
-  :root{--bg:#f2f2f7;--card:#fff;--text:#1d1d1f;--muted:#6e6e73;--border:#ececf0;--input-bg:#fff;--input-border:#d2d2d7;--accent:#0071e3;--accent-hover:#0077ed;--btn-bg:#e8e8ed;--btn-bg-hover:#dcdce1;--btn-danger-bg:#ffe5e5;--btn-danger-text:#c00;--btn-danger-hover:#ffcccc;--ok-bg:#e5f7ec;--ok-text:#006c2b;--ok-border:#009e3d;--err-bg:#ffe5e5;--err-text:#a00;--err-border:#c00;--header-bg:#1d1d1f;--header-text:#fff;--online:#009e3d;--offline:#ff9500;--never:#8e8e93}
-  html[data-theme=dark]{--bg:#1c1c1e;--card:#2c2c2e;--text:#f5f5f7;--muted:#98989d;--border:#3a3a3c;--input-bg:#1c1c1e;--input-border:#48484a;--accent:#0a84ff;--accent-hover:#409cff;--btn-bg:#3a3a3c;--btn-bg-hover:#48484a;--btn-danger-bg:#4a1e1e;--btn-danger-text:#ff6961;--btn-danger-hover:#5c2424;--ok-bg:#1a3a24;--ok-text:#6bd68a;--ok-border:#30d158;--err-bg:#3a1a1a;--err-text:#ff6961;--err-border:#ff453a;--header-bg:#000;--header-text:#fff;--online:#30d158;--offline:#ffd60a;--never:#8e8e93}
-  *{box-sizing:border-box;transition:background-color .15s,color .15s,border-color .15s}
-  body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;margin:0;background:var(--bg);color:var(--text)}
-  header{background:var(--header-bg);color:var(--header-text);padding:1em 2em;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:1em}
-  header h1{margin:0;font-size:1.15em;font-weight:600}
-  header .sub{font-size:.85em;opacity:.7}
-  .header-actions{display:flex;gap:.5em;align-items:center;flex-wrap:wrap}
-  .traffic-summary{display:flex;flex-direction:column;gap:.15em;padding:.4em .9em;margin-right:.5em;border:1px solid rgba(255,255,255,.25);border-radius:8px;font-size:.78em;background:rgba(255,255,255,.05);font-family:SF Mono,Consolas,Menlo,monospace;align-self:center;}
-  .traffic-row{display:flex;gap:.5em;align-items:center;white-space:nowrap}
-  .traffic-label{opacity:.65;min-width:3.2em}
-  .traffic-value{color:#4ade80;font-weight:600}
-  .traffic-row:nth-child(2) .traffic-value{color:#60a5fa}
-  .btn.ghost{background:transparent;color:var(--header-text);border:1px solid rgba(255,255,255,.25);padding:.5em .9em;font-size:.85em;margin:0}
-  .btn.ghost:hover{background:rgba(255,255,255,.1)}
-  .container{max-width:1200px;margin:2em auto;padding:0 1em}
-  .card{background:var(--card);border-radius:12px;padding:1.5em;margin-bottom:1.2em;box-shadow:0 1px 3px rgba(0,0,0,.06)}
-  .card h3{margin:0 0 1em;font-size:1em;font-weight:600}
-  input[type=text],input[type=password],input[type=number]{width:100%;padding:.75em;border:1px solid var(--input-border);border-radius:8px;font-size:1em;margin-bottom:.6em;background:var(--input-bg);color:var(--text)}
-  button,.btn{padding:.6em 1.2em;border:none;border-radius:8px;background:var(--accent);color:#fff;cursor:pointer;font-size:.9em;text-decoration:none;display:inline-block}
-  button:hover{background:var(--accent-hover)}
-  button:disabled{opacity:.5;cursor:not-allowed}
-  .btn{background:var(--btn-bg);color:var(--text);padding:.4em .8em;font-size:.82em;margin-right:.25em}
-  .btn:hover{background:var(--btn-bg-hover)}
-  .btn.danger{background:var(--btn-danger-bg);color:var(--btn-danger-text)}
-  .btn.danger:hover{background:var(--btn-danger-hover)}
-  table{width:100%;border-collapse:collapse}
-  th,td{padding:.75em .5em;text-align:left;border-bottom:1px solid var(--border);font-size:.9em}
-  th{font-size:.72em;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);font-weight:600}
-  th.sortable{cursor:pointer; user-select:none;}
-  th.sortable:hover{color:var(--accent);}
-  td.s-online{color:var(--online);font-weight:600}
-  td.s-offline{color:var(--offline)}
-  td.s-never{color:var(--never)}
-  td.empty{text-align:center;color:var(--muted);padding:2em}
-  .alert{padding:.9em 1.2em;border-radius:8px;margin-bottom:1em;font-size:.92em}
-  .alert.ok{background:var(--ok-bg);color:var(--ok-text);border-left:4px solid var(--ok-border)}
-  .alert.err{background:var(--err-bg);color:var(--err-text);border-left:4px solid var(--err-border)}
-  .refresh-indicator{font-size:.78em;color:var(--muted);text-align:right;margin-bottom:.4em}
-  .modal{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.6);z-index:1000}
-  .modal-content{background:var(--card);color:var(--text);padding:2em;border-radius:12px;max-width:800px;width:90%;margin:3em auto;position:relative;max-height:90vh;overflow-y:auto}
-  .close{position:absolute;top:.5em;right:1em;font-size:1.8em;cursor:pointer;color:var(--muted);line-height:1}
-  .close:hover{color:var(--text)}
-  .update-list{margin:1em 0;max-height:200px;overflow-y:auto;text-align:left;font-size:0.9em;border:1px solid var(--border);border-radius:8px;padding:0.5em;background:var(--bg)}
-  .update-item{padding:0.5em;border-bottom:1px solid var(--border)}
-  .update-item:last-child{border-bottom:none}
-  .update-date{color:var(--muted);font-size:0.85em}
-  .instructions{background:var(--card);border:1px solid var(--accent);border-radius:8px;padding:1em;margin-top:1em}
-  .instructions pre{background:var(--bg);padding:1em;border-radius:6px;overflow-x:auto;font-family:monospace;margin:0.5em 0;border:1px solid var(--border)}
-  .modal-actions{display:flex;justify-content:flex-end;gap:1em;margin-top:1.5em}
-  .lang-dropdown { position: relative; display: inline-block; }
-  .lang-menu { display: none; position: absolute; right: 0; background-color: var(--card); min-width: 130px; box-shadow: 0 8px 16px 0 rgba(0,0,0,0.2); z-index: 1001; border-radius: 8px; border: 1px solid var(--border); overflow: hidden; margin-top: 5px; }
-  .lang-menu a { color: var(--text); padding: 10px 16px; text-decoration: none; display: block; cursor: pointer; font-size: 0.9em; }
-  .lang-menu a:hover { background-color: var(--btn-bg); }
-  .lang-menu.show { display: block; }
-  .loader-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.75);z-index:2000;color:#fff;align-items:center;justify-content:center;flex-direction:column;font-size:1.2em}
-  .loader-spin{font-size:3em;animation:spin 1s linear infinite}
-  @keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
-  .badge-active{background:var(--ok-bg);color:var(--ok-text);padding:0.2em 0.6em;border-radius:6px;font-size:0.8em;font-weight:600}
-</style></head><body>
-<header>
-  <div><h1>🛡️ AmneziaWG Panel</h1><div class="sub">__LABEL__</div></div>
-  <div class="header-actions">
-    <div class="traffic-summary" title="Total traffic">
-      <div class="traffic-row"><span class="traffic-label">⬇ RX:</span><span class="traffic-value" id="total-rx">__TOTAL_RX__</span></div>
-      <div class="traffic-row"><span class="traffic-label">⬆ TX:</span><span class="traffic-value" id="total-tx">__TOTAL_TX__</span></div>
-    </div>
-    <button id="servers-btn" class="btn ghost" data-i18n="btn_servers">🌐 Серверы</button>
-    <button id="check-update-btn" class="btn ghost" data-i18n="btn_check_update">🔄 Проверить обновления</button>
-    <button id="restart-btn" class="btn ghost" data-i18n="btn_restart">🔄 Перезапуск</button>
-    <div class="lang-dropdown">
-      <button id="lang-btn" class="btn ghost" title="Switch language">🌐</button>
-      <div class="lang-menu" id="lang-menu">
-        <a onclick="setLanguage('ru')">🇷🇺 Русский</a>
-        <a onclick="setLanguage('en')">🇬🇧 English</a>
-      </div>
-    </div>
-    <button id="theme-toggle" class="btn ghost">🌙</button>
-    <a href="__BASE__/logout" class="btn ghost" data-i18n="btn_logout">🚪 Выход</a>
-  </div>
-</header>
-<div class="container">
-  __MSG__ __ERR__
-  <div class="card">
-    <h3 data-i18n="create_title">➕ Создать нового клиента</h3>
-    <form method="post" action="__BASE__/create">
-      <input type="text" name="name" placeholder="Client name (a-z, 0-9, _, -)" pattern="[a-zA-Z0-9_-]+" required autocomplete="off">
-      <button type="submit" data-i18n="btn_create">Создать</button>
+  :root { --bg: #f2f2f7; --surface: #ffffff; --text: #1d1d1f; --text-muted: #86868b; --border: #d2d2d7; --primary: #0071e3; --primary-hover: #0077ed; --danger-bg: #ffe5e5; --danger-text: #d93025; --header-bg: #1d1d1f; --header-text: #ffffff; }
+  html[data-theme="dark"] { --bg: #1c1c1e; --surface: #2c2c2e; --text: #f5f5f7; --text-muted: #98989d; --border: #3a3a3c; --primary: #0a84ff; --primary-hover: #409cff; --danger-bg: #3a1a1a; --danger-text: #ff6961; --header-bg: #000000; }
+  * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; transition: background-color 0.2s, border-color 0.2s; }
+  body { margin: 0; background: var(--bg); color: var(--text); display: flex; flex-direction: column; min-height: 100vh; }
+  header { background: var(--header-bg); color: var(--header-text); padding: 1rem; text-align: center; }
+  header h1 { margin: 0; font-size: 1.25rem; font-weight: 600; }
+  .auth-container { flex: 1; display: flex; align-items: center; justify-content: center; padding: 1rem; }
+  .auth-card { background: var(--surface); padding: 2rem; border-radius: 16px; box-shadow: 0 4px 24px rgba(0,0,0,0.06); width: 100%; max-width: 400px; }
+  .auth-card h2 { margin-top: 0; margin-bottom: 1.5rem; text-align: center; font-size: 1.25rem; }
+  .input-group { margin-bottom: 1.25rem; }
+  input { width: 100%; padding: 0.875rem 1rem; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); color: var(--text); font-size: 1rem; }
+  input:focus-visible { outline: 2px solid var(--primary); outline-offset: -1px; border-color: transparent; }
+  button { width: 100%; padding: 0.875rem; background: var(--primary); color: #fff; border: none; border-radius: 10px; font-size: 1rem; font-weight: 600; cursor: pointer; }
+  button:hover { background: var(--primary-hover); }
+  .error-msg { background: var(--danger-bg); color: var(--danger-text); padding: 0.75rem; border-radius: 8px; font-size: 0.875rem; text-align: center; margin-bottom: 1.25rem; }
+</style>
+</head>
+<body>
+<header><h1>🛡️ AmneziaWG Panel</h1><div style="font-size: 0.85em; opacity: 0.7;">__LABEL__</div></header>
+<div class="auth-container">
+  <div class="auth-card">
+    <h2>Авторизация</h2>
+    __ERR__
+    <form method="post" action="__BASE__/login">
+      <div class="input-group"><input type="text" name="username" placeholder="Логин" required autofocus autocomplete="username"></div>
+      <div class="input-group"><input type="password" name="password" placeholder="Пароль" required autocomplete="current-password"></div>
+      <button type="submit">Войти</button>
     </form>
   </div>
-  <div class="card">
-    <h3><span data-i18n="clients_title">👥 Клиенты</span> (<span id="clients-count">__COUNT__</span>)</h3>
-    <div class="refresh-indicator"><span data-i18n="updated">Обновлено:</span> <span id="last-update">--</span></div>
-    <table><thead><tr>
-      <th class="sortable" onclick="sortTable('name')" title="Сортировка"><span data-i18n="th_name">Имя</span> ↕</th>
-      <th class="sortable" onclick="sortTable('ip')" title="Сортировка"><span data-i18n="th_ip">IP</span> ↕</th>
-      <th class="sortable" onclick="sortTable('status')" title="Сортировка"><span data-i18n="th_status">Статус</span> ↕</th>
-      <th class="sortable" onclick="sortTable('rx_bytes')" title="Сортировка"><span data-i18n="th_rx">RX (всего)</span> ↕</th>
-      <th class="sortable" onclick="sortTable('tx_bytes')" title="Сортировка"><span data-i18n="th_tx">TX (всего)</span> ↕</th>
-      <th class="sortable" onclick="sortTable('handshake_ts')" title="Сортировка"><span data-i18n="th_handshake">Последний handshake</span> ↕</th>
-      <th data-i18n="th_actions">Действия</th>
-    </tr></thead>
-    <tbody id="clients-tbody">__ROWS__</tbody></table>
+</div>
+</body>
+</html>"""
+
+PAGE_TEMPLATE = r"""<!DOCTYPE html>
+<html lang="ru" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>AmneziaWG Panel</title>
+<style>
+  :root { 
+    --bg: #f2f2f7; --surface: #ffffff; --text: #1d1d1f; --text-muted: #86868b; --border: #ececf0; 
+    --input-bg: #ffffff; --input-border: #d2d2d7; 
+    --primary: #0071e3; --primary-hover: #0077ed; 
+    --btn-bg: #e8e8ed; --btn-hover: #dcdce1;
+    --danger-bg: #ffe5e5; --danger-text: #d93025; --danger-hover: #ffcccc;
+    --success-bg: #e5f7ec; --success-text: #006c2b; --success-border: #009e3d;
+    --header-bg: #1d1d1f; --header-text: #ffffff; 
+    --online: #34c759; --offline: #ff9500; --never: #8e8e93;
+    --font-stack: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  html[data-theme="dark"] { 
+    --bg: #000000; --surface: #1c1c1e; --text: #f5f5f7; --text-muted: #98989d; --border: #38383a; 
+    --input-bg: #1c1c1e; --input-border: #48484a; 
+    --primary: #0a84ff; --primary-hover: #409cff; 
+    --btn-bg: #2c2c2e; --btn-hover: #3a3a3c;
+    --danger-bg: #3a1a1a; --danger-text: #ff6961; --danger-hover: #4a1e1e;
+    --success-bg: #1a3a24; --success-text: #6bd68a; --success-border: #30d158;
+    --header-bg: #000000; --header-border: #333333;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--font-stack); padding-bottom: 2rem; }
+  a { color: var(--primary); text-decoration: none; }
+  
+  /* Доступность: видимый фокус */
+  *:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+
+  /* Header & Navigation */
+  header { background: var(--header-bg); border-bottom: 1px solid var(--header-border, transparent); padding: 1rem; position: sticky; top: 0; z-index: 100; }
+  .header-content { max-width: 1200px; margin: 0 auto; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1rem; }
+  .header-brand { display: flex; flex-direction: column; }
+  .header-brand h1 { margin: 0; font-size: 1.25rem; font-weight: 600; color: var(--header-text); }
+  .header-brand .sub { font-size: 0.85rem; opacity: 0.7; color: var(--header-text); }
+  
+  .header-controls { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+  .traffic-summary { background: rgba(255,255,255,0.1); padding: 0.3rem 0.6rem; border-radius: 8px; font-family: monospace; font-size: 0.8rem; color: var(--header-text); line-height: 1.4; border: 1px solid rgba(255,255,255,0.2); }
+  .traffic-summary span { font-weight: bold; }
+  .rx-color { color: #6bd68a; } .tx-color { color: #60a5fa; }
+  
+  .btn-ghost { background: transparent; color: var(--header-text); border: 1px solid rgba(255,255,255,0.3); padding: 0.4rem 0.8rem; border-radius: 8px; cursor: pointer; font-size: 0.85rem; }
+  .btn-ghost:hover { background: rgba(255,255,255,0.1); }
+  
+  /* Tabs */
+  .tabs { display: flex; gap: 0.5rem; margin: 1.5rem auto 1rem; max-width: 1200px; padding: 0 1rem; overflow-x: auto; }
+  .tab { padding: 0.6rem 1.2rem; background: transparent; border: none; font-size: 1rem; font-weight: 600; color: var(--text-muted); cursor: pointer; border-bottom: 2px solid transparent; transition: 0.2s; white-space: nowrap; }
+  .tab.active { color: var(--primary); border-bottom-color: var(--primary); }
+  .tab:hover:not(.active) { color: var(--text); }
+  
+  /* Layout */
+  .container { max-width: 1200px; margin: 0 auto; padding: 0 1rem; }
+  .view-section { display: none; animation: fadeIn 0.2s ease-in-out; }
+  .view-section.active { display: block; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+
+  /* Cards (Surface) */
+  .card { background: var(--surface); border-radius: 16px; padding: 1.5rem; margin-bottom: 1.25rem; box-shadow: 0 2px 12px rgba(0,0,0,0.04); border: 1px solid var(--border); }
+  .card h3 { margin: 0 0 1rem; font-size: 1.1rem; font-weight: 600; }
+  
+  /* Forms & Buttons */
+  .form-group { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+  input[type="text"], input[type="number"], input[type="password"] { 
+    flex: 1; min-width: 200px; padding: 0.75rem 1rem; border: 1px solid var(--input-border); border-radius: 10px; background: var(--input-bg); color: var(--text); font-size: 1rem; 
+  }
+  .btn { display: inline-flex; align-items: center; justify-content: center; padding: 0.75rem 1.2rem; border: none; border-radius: 10px; background: var(--btn-bg); color: var(--text); font-size: 0.9rem; font-weight: 500; cursor: pointer; text-decoration: none; min-height: 44px; }
+  .btn:hover { background: var(--btn-hover); }
+  .btn-primary { background: var(--primary); color: #ffffff; }
+  .btn-primary:hover { background: var(--primary-hover); color: #ffffff; }
+  .btn-danger { background: var(--danger-bg); color: var(--danger-text); }
+  .btn-danger:hover { background: var(--danger-hover); }
+  .btn-small { padding: 0.4rem 0.8rem; font-size: 0.85rem; min-height: 32px; border-radius: 6px; }
+
+  /* Search & Filter Bar */
+  .toolbar { display: flex; flex-wrap: wrap; gap: 1rem; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
+  .search-box { flex: 1; min-width: 250px; position: relative; }
+  .search-box input { width: 100%; padding-left: 2.5rem; border-radius: 10px; }
+  .search-box::before { content: "🔍"; position: absolute; left: 0.8rem; top: 50%; transform: translateY(-50%); font-size: 0.9rem; opacity: 0.6; }
+  .filter-box select { padding: 0.75rem 1rem; border-radius: 10px; border: 1px solid var(--input-border); background: var(--input-bg); color: var(--text); font-size: 0.95rem; cursor: pointer; min-height: 44px;}
+
+  /* Clients Table -> Responsive Cards */
+  .table-wrapper { overflow-x: auto; width: 100%; }
+  table { width: 100%; border-collapse: collapse; text-align: left; }
+  th, td { padding: 0.875rem; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
+  th { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); font-weight: 600; cursor: pointer; user-select: none; }
+  th:hover { color: var(--text); }
+  th.sort-asc::after { content: " \2191"; color: var(--primary); }
+  th.sort-desc::after { content: " \2193"; color: var(--primary); }
+  
+  .status-badge { display: inline-block; padding: 0.25rem 0.5rem; border-radius: 6px; font-size: 0.75rem; font-weight: 600; letter-spacing: 0.03em; }
+  .status-online { background: rgba(52, 199, 89, 0.15); color: var(--online); }
+  .status-offline { background: rgba(255, 149, 0, 0.15); color: var(--offline); }
+  .status-never { background: rgba(142, 142, 147, 0.15); color: var(--never); }
+
+  .actions-cell { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+  .empty-state { text-align: center; padding: 3rem 1rem; color: var(--text-muted); }
+
+  /* Mobile Adaptation */
+  @media (max-width: 768px) {
+    .header-content { flex-direction: column; align-items: stretch; text-align: center; }
+    .header-controls { justify-content: center; }
+    
+    .table-wrapper table, .table-wrapper tbody, .table-wrapper tr { display: block; width: 100%; }
+    .table-wrapper thead { display: none; /* Скрываем заголовки на мобильном */ }
+    
+    .table-wrapper tr { 
+      background: var(--surface); border: 1px solid var(--border); border-radius: 12px; 
+      margin-bottom: 1rem; padding: 1rem; display: flex; flex-direction: column; gap: 0.5rem;
+    }
+    .table-wrapper td { 
+      display: flex; justify-content: space-between; align-items: center; 
+      padding: 0.25rem 0; border: none; font-size: 0.95rem; text-align: right;
+    }
+    .table-wrapper td::before { 
+      content: attr(data-label); color: var(--text-muted); font-size: 0.8rem; text-transform: uppercase; font-weight: 600; text-align: left; margin-right: 1rem;
+    }
+    .table-wrapper td:last-child { 
+      margin-top: 0.5rem; padding-top: 0.75rem; border-top: 1px dashed var(--border); 
+      justify-content: flex-end; width: 100%;
+    }
+    .actions-cell { justify-content: flex-end; width: 100%; }
+    
+    .toolbar { flex-direction: column; align-items: stretch; }
+  }
+
+  /* Modals */
+  .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 2000; align-items: center; justify-content: center; padding: 1rem; backdrop-filter: blur(2px); }
+  .modal-content { background: var(--surface); color: var(--text); padding: 1.5rem; border-radius: 16px; width: 100%; max-width: 600px; max-height: 90vh; overflow-y: auto; position: relative; box-shadow: 0 10px 30px rgba(0,0,0,0.2); }
+  .modal-close { position: absolute; top: 1rem; right: 1rem; font-size: 1.5rem; cursor: pointer; color: var(--text-muted); background: none; border: none; line-height: 1; padding: 0.5rem; }
+  .modal-close:hover { color: var(--text); }
+  
+  /* Loaders */
+  .global-loader { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 3000; color: #fff; flex-direction: column; align-items: center; justify-content: center; }
+  .spinner { width: 40px; height: 40px; border: 4px solid rgba(255,255,255,0.3); border-radius: 50%; border-top-color: var(--primary); animation: spin 1s linear infinite; margin-bottom: 1rem; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .update-list { margin: 1rem 0; max-height: 200px; overflow-y: auto; font-size: 0.9em; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 0.5rem; }
+  .update-item { padding: 0.5rem; border-bottom: 1px solid var(--border); }
+  .update-item:last-child { border: none; }
+  
+  .alert { padding: 1rem; border-radius: 10px; margin-bottom: 1rem; font-size: 0.95rem; font-weight: 500; display: flex; align-items: center; gap: 0.5rem; }
+  .alert.ok { background: var(--success-bg); color: var(--success-text); border: 1px solid var(--success-border); }
+  .alert.err { background: var(--danger-bg); color: var(--danger-text); border: 1px solid var(--danger-text); }
+</style>
+</head>
+<body>
+<header>
+  <div class="header-content">
+    <div class="header-brand">
+      <h1>🛡️ AmneziaWG Panel</h1>
+      <div class="sub">__LABEL__</div>
+    </div>
+    <div class="header-controls">
+      <div class="traffic-summary" title="Суммарный трафик">
+        <div>⬇ <span class="rx-color" id="total-rx">__TOTAL_RX__</span></div>
+        <div>⬆ <span class="tx-color" id="total-tx">__TOTAL_TX__</span></div>
+      </div>
+      <button class="btn-ghost" onclick="checkUpdates()" data-i18n="btn_update">🔄 Обновления</button>
+      <button class="btn-ghost" onclick="restartTunnels()" data-i18n="btn_restart">⚡ Рестарт</button>
+      <button class="btn-ghost" onclick="toggleTheme()" id="theme-btn">🌙</button>
+      <a href="__BASE__/logout" class="btn-ghost" data-i18n="btn_logout">🚪 Выход</a>
+    </div>
+  </div>
+</header>
+
+<div class="tabs">
+  <button class="tab active" onclick="switchTab('clients')" data-i18n="tab_clients">👥 Клиенты (<span id="clients-count">__COUNT__</span>)</button>
+  <button class="tab" onclick="switchTab('servers')" data-i18n="tab_servers">🌐 Серверы</button>
+</div>
+
+<div class="container">
+  __MSG__
+  __ERR__
+
+  <!-- Раздел: Клиенты -->
+  <div id="clients-view" class="view-section active">
+    <div class="card">
+      <h3 data-i18n="title_create">➕ Новый клиент</h3>
+      <form class="form-group" method="post" action="__BASE__/create" onsubmit="showLoader('Создание клиента...');">
+        <input type="text" name="name" placeholder="Имя (латиница, цифры, - _)" pattern="[a-zA-Z0-9_-]+" required autocomplete="off">
+        <button type="submit" class="btn btn-primary" data-i18n="btn_create">Создать</button>
+      </form>
+    </div>
+
+    <div class="card">
+      <div class="toolbar">
+        <div class="search-box">
+          <input type="text" id="search-input" placeholder="Поиск по имени или IP..." oninput="applyFilters()">
+        </div>
+        <div class="filter-box">
+          <select id="status-filter" onchange="applyFilters()">
+            <option value="all" data-i18n="filter_all">Все статусы</option>
+            <option value="ONLINE">Онлайн</option>
+            <option value="OFFLINE">Офлайн</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th data-sort="name" onclick="setSort('name')" data-i18n="th_name">Имя</th>
+              <th data-sort="ip" onclick="setSort('ip')" data-i18n="th_ip">IP</th>
+              <th data-sort="status" onclick="setSort('status')" data-i18n="th_status">Статус</th>
+              <th data-sort="rx_bytes" onclick="setSort('rx_bytes')" data-i18n="th_rx">RX</th>
+              <th data-sort="tx_bytes" onclick="setSort('tx_bytes')" data-i18n="th_tx">TX</th>
+              <th data-sort="handshake_ts" onclick="setSort('handshake_ts')" data-i18n="th_handshake">Handshake</th>
+              <th data-i18n="th_actions" style="text-align: right;">Действия</th>
+            </tr>
+          </thead>
+          <tbody id="clients-tbody">
+            <!-- JS Rendering -->
+          </tbody>
+        </table>
+        <div id="empty-state" class="empty-state" style="display:none;" data-i18n="empty_clients">Нет клиентов</div>
+      </div>
+      <div style="text-align: right; font-size: 0.75rem; color: var(--text-muted); margin-top: 1rem;">
+        <span data-i18n="updated">Обновлено:</span> <span id="last-update">--:--:--</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Раздел: Серверы -->
+  <div id="servers-view" class="view-section">
+    <div class="card">
+      <h3 data-i18n="servers_title">Управление выходным шлюзом (SERVER B)</h3>
+      <p style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 1rem;">Здесь можно добавить новый VPS за рубежом и переключить на него весь трафик туннеля.</p>
+      <div class="table-wrapper">
+        <table id="servers-table">
+          <thead><tr><th>Имя</th><th>IP</th><th>Статус</th><th style="text-align: right;">Действия</th></tr></thead>
+          <tbody id="servers-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <h4 style="margin-top:0;">Добавить сервер</h4>
+      <div class="form-group" style="margin-bottom: 0.5rem;">
+        <input type="text" id="add-ip" placeholder="IP адрес">
+        <input type="number" id="add-port" placeholder="SSH порт (22)" value="22" style="max-width: 120px;">
+        <input type="text" id="add-user" placeholder="Пользователь (root)" value="root" style="max-width: 150px;">
+      </div>
+      <div class="form-group">
+        <input type="password" id="add-pass" placeholder="SSH пароль (не сохраняется)">
+        <input type="text" id="add-name" placeholder="Название (опционально)">
+        <button class="btn btn-primary" id="add-server-btn" onclick="addServer()">Проверить и добавить</button>
+      </div>
+    </div>
   </div>
 </div>
 
-<div id="update-modal" class="modal"><div class="modal-content">
-  <span class="close" onclick="document.getElementById('update-modal').style.display='none'">&times;</span>
-  <h3 data-i18n="update_avail">Доступны обновления</h3>
-  <div id="update-list" class="update-list"></div>
-  <div class="instructions">
-    <p style="margin-top:0;font-weight:bold;" data-i18n="update_instructions">Инструкция по обновлению:</p>
-    <p style="font-size:0.9em;margin-bottom:0.5em;" data-i18n="update_cmd_step">Выполните команду обновления по SSH:</p>
-    <pre>sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/daff4ik/amneziawg-cascade/main/deploy.sh)" -- --update</pre>
+<!-- Модальное окно: Обновления -->
+<div id="update-modal" class="modal">
+  <div class="modal-content">
+    <button class="modal-close" onclick="closeModal('update-modal')">&times;</button>
+    <h3>Доступны обновления</h3>
+    <div id="update-list" class="update-list"></div>
+    <div style="background: var(--bg); padding: 1rem; border-radius: 8px; margin-top: 1rem; border: 1px solid var(--border);">
+      <p style="margin-top:0; font-size: 0.9rem; color: var(--text-muted);">Для обновления выполните в консоли сервера:</p>
+      <code style="display:block; padding: 0.5rem; background: #000; color: #4ade80; border-radius: 6px; font-size: 0.85rem; overflow-x: auto;">
+        sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/daff4ik/amneziawg-cascade/main/deploy.sh)" -- --update
+      </code>
+    </div>
   </div>
-  <div class="modal-actions">
-    <button class="btn" onclick="document.getElementById('update-modal').style.display='none'" data-i18n="btn_close">Закрыть</button>
-  </div>
-</div></div>
+</div>
 
-<div id="servers-modal" class="modal"><div class="modal-content">
-  <span class="close" onclick="closeServersModal()">&times;</span>
-  <h3 data-i18n="servers_title">Управление SERVER B</h3>
-  <div id="servers-list"></div>
-  <div style="border-top:1px solid var(--border); padding-top:1em; margin-top:1em;">
-    <h4 data-i18n="servers_add_title" style="margin:0 0 .7em;">Добавить сервер</h4>
-    <input type="text" id="add-ip" placeholder="IP нового сервера">
-    <input type="number" id="add-port" placeholder="SSH-порт (22)" value="22">
-    <input type="text" id="add-user" placeholder="SSH-пользователь (root)" value="root">
-    <input type="text" id="add-name" placeholder="Название (опционально)">
-    <input type="password" id="add-pass" placeholder="SSH-пароль">
-    <button id="add-server-btn" onclick="addServer()" data-i18n="btn_servers_add">Добавить и проверить</button>
-  </div>
-</div></div>
-
-<div id="global-loader" class="loader-overlay" style="display:none;">
-  <div class="loader-spin">⚙️</div>
-  <p id="loader-text" style="margin-top:1em"></p>
+<!-- Глобальный лоадер -->
+<div id="global-loader" class="global-loader">
+  <div class="spinner"></div>
+  <div id="loader-text" style="font-weight: 500;">Подождите...</div>
 </div>
 
 <script>
-var currentLang = localStorage.getItem('lang') || 'ru';
-var BASE_URL = "__BASE__";
-var _tableClients = [];
+const BASE_URL = "__BASE__";
+let _allClients = [];
+let _serversData = { active_id: null, servers: [] };
+let _currentSort = 'name';
+let _sortAsc = true;
+let _pollInterval = null;
 
-// Переменные для динамической сортировки
-var sortCol = 'name';
-var sortDir = 1;
-
-const i18n = {
+// i18n Dictionary
+const dict = {
   ru: {
-    signin: "Вход", btn_login: "Войти", btn_restart: "🔄 Перезапуск", btn_logout: "🚪 Выход",
-    create_title: "➕ Создать нового клиента", btn_create: "Создать",
-    clients_title: "👥 Клиенты", updated: "Обновлено:",
-    th_name: "Имя", th_ip: "IP", th_status: "Статус", th_rx: "RX (всего)", th_tx: "TX (всего)", th_handshake: "Последний handshake", th_actions: "Действия",
-    update_avail: "Доступны обновления", btn_close: "Закрыть",
-    update_instructions: "Инструкция по обновлению:",
-    update_cmd_step: "Выполните команду обновления по SSH:",
-    no_updates: "Обновлений не найдено. У вас последняя версия.", err_check: "Ошибка проверки обновлений: ",
-    btn_check_update: "🔄 Проверить обновления", checking: "⏳ Проверка...",
-    btn_servers: "🌐 Серверы", servers_title: "Управление SERVER B", servers_add_title: "Добавить сервер", btn_servers_add: "Добавить и проверить",
-    servers_empty: "Нет добавленных серверов"
+    status_online: "ОНЛАЙН", status_offline: "ОФФЛАЙН", status_never: "НИКОГДА",
+    btn_del: "Удалить", confirm_del: "Удалить клиента", confirm_switch: "Переключиться на сервер",
+    btn_switch: "Переключить", current: "Активный"
   },
   en: {
-    signin: "Sign in", btn_login: "Sign in", btn_restart: "🔄 Restart", btn_logout: "🚪 Logout",
-    create_title: "➕ Create new client", btn_create: "Create",
-    clients_title: "👥 Clients", updated: "Updated:",
-    th_name: "Name", th_ip: "IP", th_status: "Status", th_rx: "RX (total)", th_tx: "TX (total)", th_handshake: "Last handshake", th_actions: "Actions",
-    update_avail: "Updates Available", btn_close: "Close",
-    update_instructions: "Update instructions:",
-    update_cmd_step: "Run the update command via SSH:",
-    no_updates: "No updates found.", err_check: "Update check error: ",
-    btn_check_update: "🔄 Check Update", checking: "⏳ Checking...",
-    btn_servers: "🌐 Servers", servers_title: "SERVER B Management", servers_add_title: "Add server", btn_servers_add: "Add & check",
-    servers_empty: "No servers added yet"
+    status_online: "ONLINE", status_offline: "OFFLINE", status_never: "NEVER",
+    btn_del: "Delete", confirm_del: "Delete client", confirm_switch: "Switch to server",
+    btn_switch: "Switch", current: "Active"
   }
 };
+const lang = 'ru'; // Hardcoded fallback for now
+const t = (k) => dict[lang][k] || k;
 
-function t(key) { return i18n[currentLang][key] || key; }
-function esc(s){ var d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
-
-window.setLanguage = function(lang) {
-  currentLang = lang;
-  localStorage.setItem('lang', currentLang);
-  document.getElementById('lang-menu').classList.remove('show');
-  applyLang();
+// Theming
+function initTheme() {
+  const saved = localStorage.getItem('theme') || 'light';
+  document.documentElement.setAttribute('data-theme', saved);
+  document.getElementById('theme-btn').textContent = saved === 'dark' ? '☀️' : '🌙';
+}
+function toggleTheme() {
+  const current = document.documentElement.getAttribute('data-theme');
+  const next = current === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem('theme', next);
+  document.getElementById('theme-btn').textContent = next === 'dark' ? '☀️' : '🌙';
 }
 
-document.getElementById('lang-btn').addEventListener('click', function(e) {
-  e.stopPropagation();
-  document.getElementById('lang-menu').classList.toggle('show');
-});
-window.addEventListener('click', function() {
-  var menu = document.getElementById('lang-menu');
-  if (menu && menu.classList.contains('show')) menu.classList.remove('show');
-});
-
-function applyLang() {
-  document.querySelectorAll('[data-i18n]').forEach(el => {
-    var k = el.getAttribute('data-i18n');
-    if (i18n[currentLang][k]) el.textContent = i18n[currentLang][k];
-  });
-  var ub = document.getElementById('check-update-btn');
-  if (ub && !ub.disabled) ub.textContent = t('btn_check_update');
-  if (typeof refreshTableOnly === 'function') refreshTableOnly();
-}
-
+// UI Helpers
 function showLoader(txt) { document.getElementById('loader-text').textContent = txt; document.getElementById('global-loader').style.display = 'flex'; }
 function hideLoader() { document.getElementById('global-loader').style.display = 'none'; }
+function closeModal(id) { document.getElementById(id).style.display = 'none'; }
+function escapeHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
-(function(){
-  var saved = localStorage.getItem('theme') || 'light';
-  document.documentElement.setAttribute('data-theme', saved);
-  var tt = document.getElementById('theme-toggle');
-  tt.textContent = saved === 'dark' ? '☀️' : '🌙';
-  tt.addEventListener('click', function(){
-    var next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
-    document.documentElement.setAttribute('data-theme', next);
-    localStorage.setItem('theme', next);
-    tt.textContent = next === 'dark' ? '☀️' : '🌙';
+// Tabs
+function switchTab(tabId) {
+  document.querySelectorAll('.view-section').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
+  document.getElementById(`${tabId}-view`).classList.add('active');
+  document.querySelector(`button[onclick="switchTab('${tabId}')"]`).classList.add('active');
+  if (tabId === 'servers') loadServers();
+}
+
+// ==================== Clients Logic ====================
+
+function setSort(col) {
+  if (_currentSort === col) { _sortAsc = !_sortAsc; } 
+  else { _currentSort = col; _sortAsc = true; }
+  
+  // Update UI arrows
+  document.querySelectorAll('th[data-sort]').forEach(th => {
+    th.classList.remove('sort-asc', 'sort-desc');
+    if (th.getAttribute('data-sort') === col) {
+      th.classList.add(_sortAsc ? 'sort-asc' : 'sort-desc');
+    }
+  });
+  applyFilters();
+}
+
+function applyFilters() {
+  const query = document.getElementById('search-input').value.toLowerCase();
+  const status = document.getElementById('status-filter').value;
+  
+  let filtered = _allClients.filter(c => {
+    const matchQuery = c.name.toLowerCase().includes(query) || c.ip.includes(query);
+    const matchStatus = status === 'all' || c.status === status;
+    return matchQuery && matchStatus;
   });
 
-  document.getElementById('check-update-btn').addEventListener('click', async function(){
-    this.disabled = true;
-    this.textContent = t('checking');
-    try {
-      var r = await fetch(BASE_URL + '/api/check_update', {credentials: 'same-origin'});
-      if (r.status === 401) { location.href = BASE_URL + '/login'; return; }
-      var d = await r.json();
-      if (d.error) { alert(t('err_check') + d.error); }
-      else if (!d.has_updates) { alert(t('no_updates')); }
-      else {
-        var listDiv = document.getElementById('update-list');
-        listDiv.innerHTML = d.commits.map(c =>
-          '<div class="update-item"><div class="update-date">' + new Date(c.date).toLocaleString() + '</div>' +
-          c.message.replace(/\\n/g, '<br>') + '</div>').join('');
-        document.getElementById('update-modal').style.display = 'block';
-      }
-    } catch(e) { alert(t('err_check') + e); }
-    finally { this.disabled = false; this.textContent = t('btn_check_update'); }
+  // Sorting
+  filtered.sort((a, b) => {
+    let valA = a[_currentSort]; let valB = b[_currentSort];
+    if (typeof valA === 'string') valA = valA.toLowerCase();
+    if (typeof valB === 'string') valB = valB.toLowerCase();
+    if (valA < valB) return _sortAsc ? -1 : 1;
+    if (valA > valB) return _sortAsc ? 1 : -1;
+    return 0;
   });
 
-  document.getElementById('restart-btn').addEventListener('click', function(){
-    if (!confirm('Restart awg0 and awg1?')) return;
-    var f = document.createElement('form'); f.method='POST'; f.action = BASE_URL + '/restart';
-    document.body.appendChild(f); f.submit();
-  });
+  renderClients(filtered);
+}
 
-  document.getElementById('servers-btn').addEventListener('click', async function(){
-    document.getElementById('servers-modal').style.display = 'block';
-    await loadServers();
-  });
-
-  applyLang();
-})();
-
-function closeServersModal() { document.getElementById('servers-modal').style.display = 'none'; }
-
-async function loadServers() {
-  var r = await fetch(BASE_URL + '/api/servers', {credentials:'same-origin'});
-  if (!r.ok) return;
-  var d = await r.json();
-  var list = document.getElementById('servers-list');
-  if (!d.servers || !d.servers.length) {
-    list.innerHTML = '<p style="color:var(--muted)">' + t('servers_empty') + '</p>';
+function renderClients(clients) {
+  const tbody = document.getElementById('clients-tbody');
+  const empty = document.getElementById('empty-state');
+  document.getElementById('clients-count').textContent = _allClients.length;
+  
+  if (clients.length === 0) {
+    tbody.innerHTML = '';
+    empty.style.display = 'block';
     return;
   }
-  var html = '<table style="width:100%"><thead><tr><th>Name</th><th>IP</th><th>Status</th><th>Actions</th></tr></thead><tbody>';
-  d.servers.forEach(function(s) {
-    var isActive = s.id === d.active_id;
-    var statusHtml = isActive ? '<span class="badge-active">ACTIVE</span>' : '<span style="color:var(--muted)">idle</span>';
-    var actions = isActive
-      ? '<span style="color:var(--muted)">текущий</span>'
-      : '<button class="btn" onclick="switchServer(' + s.id + ',\'' + esc(s.name) + '\')">Переключить</button>'
-        + '<button class="btn danger" onclick="deleteServer(' + s.id + ')">×</button>';
-    html += '<tr><td>' + esc(s.name) + '</td><td>' + esc(s.ip) + '</td><td>' + statusHtml + '</td><td>' + actions + '</td></tr>';
-  });
-  html += '</tbody></table>';
-  list.innerHTML = html;
+  empty.style.display = 'none';
+
+  tbody.innerHTML = clients.map(c => {
+    const statusClass = c.status === 'ONLINE' ? 'status-online' : (c.status === 'OFFLINE' ? 'status-offline' : 'status-never');
+    const statusLabel = c.status === 'ONLINE' ? t('status_online') : (c.status === 'OFFLINE' ? t('status_offline') : t('status_never'));
+    
+    // Защита от XSS для данных URL
+    const encName = encodeURIComponent(c.name);
+    const safeName = escapeHtml(c.name);
+    
+    return `<tr>
+      <td data-label="Имя"><strong>${safeName}</strong></td>
+      <td data-label="IP">${escapeHtml(c.ip)}</td>
+      <td data-label="Статус"><span class="status-badge ${statusClass}">${statusLabel}</span></td>
+      <td data-label="RX">${escapeHtml(c.rx)}</td>
+      <td data-label="TX">${escapeHtml(c.tx)}</td>
+      <td data-label="Handshake">${escapeHtml(c.handshake)}</td>
+      <td data-label="Действия" class="actions-cell">
+        <a href="${BASE_URL}/download/conf/${encName}" class="btn btn-small" title="Скачать .conf">.conf</a>
+        <a href="${BASE_URL}/download/vpn/${encName}" class="btn btn-small" title="Amnezia Link">vpn://</a>
+        <form method="post" action="${BASE_URL}/delete/${encName}" onsubmit="return confirm('${t('confirm_del')} ${safeName}?');" style="margin:0;">
+          <button type="submit" class="btn btn-small btn-danger" title="${t('btn_del')}">×</button>
+        </form>
+      </td>
+    </tr>`;
+  }).join('');
+  document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
+}
+
+async function fetchClients() {
+  try {
+    const r = await fetch(BASE_URL + '/api/clients', {credentials:'same-origin', cache:'no-store'});
+    if (r.status === 401) { location.reload(); return; }
+    if (!r.ok) return;
+    _allClients = await r.json();
+    applyFilters();
+  } catch (e) { console.error('Fetch error:', e); }
+}
+
+// ==================== Servers Logic ====================
+
+async function loadServers() {
+  try {
+    const r = await fetch(BASE_URL + '/api/servers', {credentials:'same-origin'});
+    if (!r.ok) return;
+    _serversData = await r.json();
+    
+    const tbody = document.getElementById('servers-tbody');
+    if (!_serversData.servers.length) {
+      tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-muted);">Нет добавленных серверов</td></tr>';
+      return;
+    }
+    
+    tbody.innerHTML = _serversData.servers.map(s => {
+      const isActive = s.id === _serversData.active_id;
+      const statusHtml = isActive ? `<span class="status-badge status-online">${t('current')}</span>` : `<span class="status-badge status-never">Ожидает</span>`;
+      
+      const safeName = escapeHtml(s.name);
+      let actions = isActive 
+        ? `<span style="color:var(--text-muted); font-size: 0.85rem;">Используется</span>`
+        : `<button class="btn btn-small btn-primary" onclick="switchServer(${s.id}, '${safeName.replace(/'/g, "\\'")}')">${t('btn_switch')}</button>
+           <button class="btn btn-small btn-danger" onclick="deleteServer(${s.id})">×</button>`;
+           
+      return `<tr>
+        <td data-label="Имя"><strong>${safeName}</strong></td>
+        <td data-label="IP">${escapeHtml(s.ip)}</td>
+        <td data-label="Статус">${statusHtml}</td>
+        <td data-label="Действия" style="text-align:right;">${actions}</td>
+      </tr>`;
+    }).join('');
+  } catch (e) { console.error(e); }
 }
 
 async function addServer() {
-  var ip = document.getElementById('add-ip').value.trim();
-  var port = parseInt(document.getElementById('add-port').value) || 22;
-  var user = document.getElementById('add-user').value.trim() || 'root';
-  var name = document.getElementById('add-name').value.trim() || ip;
-  var pass = document.getElementById('add-pass').value;
-  if (!ip || !pass) { alert('IP и пароль обязательны'); return; }
-  var btn = document.getElementById('add-server-btn');
-  btn.disabled = true; btn.textContent = '⏳ SSH...';
+  const ip = document.getElementById('add-ip').value.trim();
+  const port = parseInt(document.getElementById('add-port').value) || 22;
+  const user = document.getElementById('add-user').value.trim() || 'root';
+  const name = document.getElementById('add-name').value.trim() || ip;
+  const pass = document.getElementById('add-pass').value;
+  
+  if (!ip || !pass) { alert('IP и пароль обязательны!'); return; }
+  
+  const btn = document.getElementById('add-server-btn');
+  btn.disabled = true; btn.textContent = '⏳ Подключение...';
+  
   try {
-    var r = await fetch(BASE_URL + '/api/servers/add', {
-      method:'POST', credentials:'same-origin',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ip: ip, port: port, user: user, password: pass, name: name})
+    const r = await fetch(BASE_URL + '/api/servers/add', {
+      method: 'POST', credentials:'same-origin', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ip, port, user, password: pass, name})
     });
-    var d = await r.json();
-    if (!r.ok) { alert('Ошибка: ' + (d.error || 'unknown')); return; }
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Server error');
+    
     document.getElementById('add-ip').value = '';
     document.getElementById('add-pass').value = '';
     document.getElementById('add-name').value = '';
     await loadServers();
-  } catch(e) { alert('Ошибка: ' + e); }
-  finally { btn.disabled = false; btn.textContent = t('btn_servers_add'); }
+  } catch(e) {
+    alert('Ошибка: ' + e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = 'Проверить и добавить';
+  }
 }
 
 async function switchServer(sid, name) {
-  if (!confirm('Переключиться на ' + name + '?\n\nПотребуется ввести SSH-пароль.')) return;
-  var pass = prompt('SSH-пароль для ' + name + ':');
+  if (!confirm(`${t('confirm_switch')} ${name}?\n\nВам нужно будет ввести SSH-пароль от этого сервера.`)) return;
+  const pass = prompt(`SSH-пароль для ${name}:`);
   if (!pass) return;
-  showLoader('Переключение на ' + name + '... Это может занять 1-2 минуты. Не закрывайте страницу.');
+  
+  showLoader(`Настройка туннеля на ${name}... Не закрывайте страницу!`);
   try {
-    var r = await fetch(BASE_URL + '/api/servers/switch/' + sid, {
-      method:'POST', credentials:'same-origin',
-      headers:{'Content-Type':'application/json'},
+    const r = await fetch(BASE_URL + `/api/servers/switch/${sid}`, {
+      method: 'POST', credentials: 'same-origin', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({password: pass})
     });
-    var d = await r.json();
-    hideLoader();
-    if (!r.ok) { alert('Ошибка: ' + (d.error || 'unknown')); return; }
-    alert('Готово! ' + (d.message || ''));
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Switch failed');
+    alert('✅ Успешно! ' + (d.message || ''));
     await loadServers();
-  } catch(e) {
+  } catch (e) {
+    alert('❌ Ошибка: ' + e.message);
+  } finally {
     hideLoader();
-    alert('Ошибка: ' + e);
   }
 }
 
 async function deleteServer(sid) {
-  if (!confirm('Удалить сервер из списка? (файлы не трогаем)')) return;
-  await fetch(BASE_URL + '/api/servers/' + sid, {method:'DELETE', credentials:'same-origin'});
+  if (!confirm('Удалить сервер из списка панели?')) return;
+  await fetch(BASE_URL + `/api/servers/${sid}`, {method: 'DELETE', credentials: 'same-origin'});
   await loadServers();
 }
 
-function buildRow(c){
-  var statusLabel = c.status;
-  if (currentLang === 'ru') {
-    if (statusLabel === 'ONLINE') statusLabel = 'ОНЛАЙН';
-    if (statusLabel === 'OFFLINE') statusLabel = 'ОФФЛАЙН';
-    if (statusLabel === 'NEVER') statusLabel = 'НИКОГДА';
-  }
-  var btnDelete = currentLang === 'ru' ? 'Удалить' : 'Delete';
-  return '<tr>'+
-    '<td><strong>'+esc(c.name)+'</strong></td>'+
-    '<td>'+esc(c.ip)+'</td>'+
-    '<td class="s-'+c.status.toLowerCase()+'">'+statusLabel+'</td>'+
-    '<td>'+esc(c.rx)+'</td>'+
-    '<td>'+esc(c.tx)+'</td>'+
-    '<td>'+esc(c.handshake)+'</td>'+
-    '<td>'+
-      '<a href="'+BASE_URL+'/download/conf/'+encodeURIComponent(c.name)+'" class="btn">.conf</a>'+
-      '<a href="'+BASE_URL+'/download/vpn/'+encodeURIComponent(c.name)+'" class="btn">vpn://</a>'+
-      '<form method="post" action="'+BASE_URL+'/delete/'+encodeURIComponent(c.name)+'" onsubmit="return confirm(\''+(currentLang==='ru'?'Удалить клиента ':'Delete client ')+esc(c.name)+'?\')" style="display:inline">'+
-      '<button type="submit" class="btn danger">'+btnDelete+'</button></form>'+
-    '</td></tr>';
+// ==================== Top Level Actions ====================
+
+function restartTunnels() {
+  if (!confirm('Перезапустить туннели awg0 и awg1? VPN соединение прервется на пару секунд.')) return;
+  const f = document.createElement('form'); f.method = 'POST'; f.action = BASE_URL + '/restart';
+  document.body.appendChild(f); f.submit();
 }
 
-function sortTable(col) {
-  if (sortCol === col) {
-    sortDir *= -1; // Меняем направление сортировки
-  } else {
-    sortCol = col;
-    sortDir = 1;
-  }
-  applySort();
-}
-
-function applySort() {
-  if (!_tableClients.length) return;
-  _tableClients.sort(function(a, b) {
-    var vA = a[sortCol]; 
-    var vB = b[sortCol];
-    
-    // Специальная логика для IP адресов
-    if (sortCol === 'ip') {
-      vA = a.ip ? a.ip.split('.').reduce((acc, val) => (acc << 8) + parseInt(val, 10), 0) : 0;
-      vB = b.ip ? b.ip.split('.').reduce((acc, val) => (acc << 8) + parseInt(val, 10), 0) : 0;
-      return (vA - vB) * sortDir;
-    }
-    
-    if (typeof vA === 'string') return vA.localeCompare(vB) * sortDir;
-    return (vA - vB) * sortDir;
-  });
-  refreshTableOnly();
-}
-
-function refreshTableOnly() {
-  if (!_tableClients.length) return;
-  var tb = document.getElementById('clients-tbody');
-  tb.innerHTML = _tableClients.map(buildRow).join('');
-}
-
-var updating = false;
-async function refresh(){
-  if (updating) return;
-  updating = true;
+async function checkUpdates() {
+  showLoader('Проверка обновлений...');
   try {
-    var r = await fetch(BASE_URL + '/api/clients', { credentials:'same-origin', cache:'no-store' });
-    if (r.status === 401) { location.href = BASE_URL + '/login'; return; }
-    if (!r.ok) return;
-    _tableClients = await r.json();
-    
-    // Применяем текущую сортировку к новым данным
-    applySort();
-    
-    if (_tableClients.length === 0) {
-       document.getElementById('clients-tbody').innerHTML = '<tr><td colspan="7" class="empty">'+(currentLang==='ru'?'Нет клиентов':'No clients yet')+'</td></tr>';
+    const r = await fetch(BASE_URL + '/api/check_update', {credentials: 'same-origin'});
+    if (r.status === 401) { location.reload(); return; }
+    const d = await r.json();
+    hideLoader();
+    if (d.error) { alert('Ошибка: ' + d.error); }
+    else if (!d.has_updates) { alert('У вас установлена последняя версия.'); }
+    else {
+      document.getElementById('update-list').innerHTML = d.commits.map(c => 
+        `<div class="update-item"><div style="color:var(--text-muted);font-size:0.8rem;">${new Date(c.date).toLocaleString()}</div>${escapeHtml(c.message)}</div>`
+      ).join('');
+      document.getElementById('update-modal').style.display = 'flex';
     }
-    
-    document.getElementById('clients-count').textContent = _tableClients.length;
-    document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
-  } catch(e) {} finally { updating = false; }
+  } catch(e) { hideLoader(); alert(e); }
 }
-setInterval(refresh, 5000);
-setTimeout(refresh, 500);
-</script></body></html>"""
+
+// ==================== Lifecycle ====================
+
+function startPolling() {
+  if (_pollInterval) clearInterval(_pollInterval);
+  fetchClients();
+  _pollInterval = setInterval(fetchClients, 5000);
+}
+
+// Умный поллинг (экономия ресурсов, если вкладка скрыта)
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) { clearInterval(_pollInterval); } 
+  else { startPolling(); }
+});
+
+initTheme();
+// Инициализируем сортировку по умолчанию
+document.querySelector('th[data-sort="name"]').classList.add('sort-asc');
+startPolling();
+
+</script>
+</body>
+</html>"""
 
 def render_login(error=""):
-    err = f'<div class="error">{error}</div>' if error else ""
+    err = f'<div class="error-msg">{error}</div>' if error else ""
     return LOGIN_TEMPLATE.replace("__ERR__", err).replace("__LABEL__", SERVER_LABEL).replace("__BASE__", BASE_URL)
 
 def render_page(clients, message="", error=""):
-    # Первоначальный статический рендер (до срабатывания JS)
-    rows = []
-    for c in clients:
-        st = c.get("status", "NEVER")
-        cls = st.lower()
-        n = c["name"]
-        rows.append(
-            '<tr>'
-            f'<td><strong>{n}</strong></td>'
-            f'<td>{c["ip"]}</td>'
-            f'<td class="s-{cls}">{st}</td>'
-            f'<td>{c.get("rx","0 B")}</td>'
-            f'<td>{c.get("tx","0 B")}</td>'
-            f'<td>{c.get("handshake","никогда")}</td>'
-            '<td>'
-            f'<a href="{BASE_URL}/download/conf/{n}" class="btn">.conf</a>'
-            f'<a href="{BASE_URL}/download/vpn/{n}" class="btn">vpn://</a>'
-            f'<form method="post" action="{BASE_URL}/delete/{n}" onsubmit="return confirm(\'Delete client {n}?\')" style="display:inline">'
-            '<button type="submit" class="btn danger">Удалить</button></form>'
-            '</td></tr>'
-        )
-    if not rows:
-        rows.append('<tr><td colspan="7" class="empty">No clients yet</td></tr>')
-    msg = f'<div class="alert ok">{message}</div>' if message else ""
-    err = f'<div class="alert err">{error}</div>' if error else ""
+    msg = f'<div class="alert ok">✅ {message}</div>' if message else ""
+    err = f'<div class="alert err">❌ {error}</div>' if error else ""
     trx, ttx = total_traffic(clients)
     return (PAGE_TEMPLATE
             .replace("__MSG__", msg)
             .replace("__ERR__", err)
             .replace("__LABEL__", SERVER_LABEL)
             .replace("__COUNT__", str(len(clients)))
-            .replace("__ROWS__", "".join(rows))
             .replace("__TOTAL_RX__", trx)
             .replace("__TOTAL_TX__", ttx)
             .replace("__BASE__", BASE_URL))
@@ -962,9 +1087,12 @@ async def login_submit(username: str = Form(...), password: str = Form(...)):
     try:
         u, p = load_credentials()
     except RuntimeError:
-        return RedirectResponse(f"{BASE_URL}/login?error=config+error", status_code=303)
+        return RedirectResponse(f"{BASE_URL}/login?error=Config+Error", status_code=303)
+    
+    # Safe comparison
     if not (hmac.compare_digest(username, u) and hmac.compare_digest(password, p)):
-        return RedirectResponse(f"{BASE_URL}/login?error=Invalid+credentials", status_code=303)
+        return RedirectResponse(f"{BASE_URL}/login?error=Неверный+логин+или+пароль", status_code=303)
+    
     r = RedirectResponse(f"{BASE_URL}/", status_code=303)
     r.set_cookie(SESSION_COOKIE, make_token(p), max_age=SESSION_DAYS*86400,
                  httponly=True, secure=True, samesite="lax", path="/")
@@ -990,7 +1118,8 @@ async def on_startup():
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request, message: str = "", error: str = ""):
     current_user(request)
-    return render_page(enrich(parse_clients()), message, error)
+    # Первоначальный рендер пустого списка (JS подтянет данные сразу)
+    return render_page([], message, error)
 
 @app.get("/api/clients")
 async def api_clients(request: Request):
@@ -1065,6 +1194,7 @@ async def api_servers_switch(request: Request, sid: int):
         return JSONResponse({"error": "Сервер не найден"}, status_code=404)
     if data.get("active_id") == sid:
         return JSONResponse({"error": "Этот сервер уже активен"}, status_code=400)
+    
     ok, msg = await run_in_threadpool(do_switch_server, server, password)
     if ok:
         _notify(f"🌐 <b>Переключение SERVER-B</b>\nНа: <code>{server['ip']}</code> ({server['name']})\nРезультат: OK")
@@ -1076,18 +1206,20 @@ async def api_servers_switch(request: Request, sid: int):
 @app.post("/create")
 async def create_client(request: Request, name: str = Form(...)):
     current_user(request)
+    # Жесткая очистка имени от инъекций и спецсимволов
     n = re.sub(r"[^a-zA-Z0-9_-]", "", name)
     if not n:
-        return RedirectResponse(f"{BASE_URL}/?error=Invalid+name", status_code=303)
+        return RedirectResponse(f"{BASE_URL}/?error=Недопустимое+имя+клиента", status_code=303)
     try:
+        # Вызов внешнего bash-скрипта через безопасный массив аргументов (без shell=True)
         subprocess.run([ADD_SCRIPT, n], input="y\n", capture_output=True, text=True, timeout=90, check=True)
         _notify(f"👤 <b>Новый клиент</b> (через панель)\nИмя: <code>{n}</code>")
-        return RedirectResponse(f"{BASE_URL}/?message=Client+{n}+created", status_code=303)
+        return RedirectResponse(f"{BASE_URL}/?message=Клиент+{n}+создан", status_code=303)
     except subprocess.CalledProcessError as e:
         err = (e.stderr or e.stdout or "error").strip()[:200]
         return RedirectResponse(f"{BASE_URL}/?error={err.replace(' ','+').replace(chr(10),' ')}", status_code=303)
     except subprocess.TimeoutExpired:
-        return RedirectResponse(f"{BASE_URL}/?error=Timeout", status_code=303)
+        return RedirectResponse(f"{BASE_URL}/?error=Таймаут+операции", status_code=303)
 
 @app.post("/delete/{name}")
 async def delete_client(request: Request, name: str):
@@ -1096,7 +1228,7 @@ async def delete_client(request: Request, name: str):
     try:
         subprocess.run([REMOVE_SCRIPT, n], input="y\n", capture_output=True, text=True, timeout=60, check=True)
         _notify(f"🗑️ <b>Клиент удалён</b> (через панель)\nИмя: <code>{n}</code>")
-        return RedirectResponse(f"{BASE_URL}/?message=Client+{n}+deleted", status_code=303)
+        return RedirectResponse(f"{BASE_URL}/?message=Клиент+{n}+удалён", status_code=303)
     except subprocess.CalledProcessError as e:
         err = (e.stderr or e.stdout or "error").strip()[:200]
         return RedirectResponse(f"{BASE_URL}/?error={err.replace(' ','+').replace(chr(10),' ')}", status_code=303)
@@ -1119,9 +1251,9 @@ async def restart_tunnels(request: Request):
 @app.get("/download/conf/{name}")
 async def dl_conf(request: Request, name: str):
     current_user(request)
-    n = re.sub(r"[^a-zA-Z0-9_-]", "", name)
+    n = re.sub(r"[^a-zA-Z0-9_-]", "", name) # Защита от Path Traversal
     p = os.path.join(CLIENTS_DIR, f"{n}.conf")
-    if not os.path.isfile(p): raise HTTPException(404, "not found")
+    if not os.path.isfile(p): raise HTTPException(404, "Конфигурация не найдена")
     return FileResponse(p, media_type="text/plain", filename=f"{n}.conf")
 
 @app.get("/download/vpn/{name}")
@@ -1129,7 +1261,7 @@ async def dl_vpn(request: Request, name: str):
     current_user(request)
     n = re.sub(r"[^a-zA-Z0-9_-]", "", name)
     p = os.path.join(CLIENTS_DIR, f"{n}.vpn.txt")
-    if not os.path.isfile(p): raise HTTPException(404, "not found")
+    if not os.path.isfile(p): raise HTTPException(404, "Ссылка не найдена")
     return FileResponse(p, media_type="text/plain", filename=f"{n}.vpn.txt")
 
 if __name__ == "__main__":
