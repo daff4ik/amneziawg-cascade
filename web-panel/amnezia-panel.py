@@ -396,7 +396,8 @@ def get_live_status():
 
 def fmt_handshake(ts):
     if ts == 0: return "никогда"
-    return datetime.datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
+    # Изменен формат даты на ДД.ММ.ГГГГ ЧЧ:ММ:СС в соответствии с ТЗ
+    return datetime.datetime.fromtimestamp(ts).strftime('%d.%m.%Y %H:%M:%S')
 
 def fmt_bytes(b):
     if b >= 1024**3: return f"{b/1024**3:.2f} GiB"
@@ -456,7 +457,7 @@ LOGIN_TEMPLATE = r"""<!DOCTYPE html>
 <title>AmneziaWG Panel - Login</title>
 <style>
   :root { --bg: #f2f2f7; --surface: #ffffff; --text: #1d1d1f; --text-muted: #86868b; --border: #d2d2d7; --primary: #0071e3; --primary-hover: #0077ed; --danger-bg: #ffe5e5; --danger-text: #d93025; --header-bg: #1d1d1f; --header-text: #ffffff; }
-  html[data-theme="dark"] { --bg: #1c1c1e; --surface: #2c2c2e; --text: #f5f5f7; --text-muted: #98989d; --border: #3a3a3c; --primary: #0a84ff; --primary-hover: #409cff; --danger-bg: #3a1a1a; --danger-text: #ff6961; --header-bg: #000000; }
+  html[data-theme="dark"] { --bg: #1c1c1e; --surface: #2c2c2e; --text: #f5f5f7; --text-muted: #98989d; --border: #48484a; --primary: #0a84ff; --primary-hover: #409cff; --danger-bg: #3a1a1a; --danger-text: #ff6961; --header-bg: #000000; }
   * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; transition: background-color 0.2s, border-color 0.2s; }
   body { margin: 0; background: var(--bg); color: var(--text); display: flex; flex-direction: column; min-height: 100vh; }
   header { background: var(--header-bg); color: var(--header-text); padding: 1rem; text-align: center; }
@@ -519,10 +520,8 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
   body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--font-stack); padding-bottom: 2rem; }
   a { color: var(--primary); text-decoration: none; }
   
-  /* Доступность: видимый фокус */
   *:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 
-  /* Header & Navigation */
   header { background: var(--header-bg); border-bottom: 1px solid var(--header-border, transparent); padding: 1rem; position: sticky; top: 0; z-index: 100; }
   .header-content { max-width: 1200px; margin: 0 auto; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1rem; }
   .header-brand { display: flex; flex-direction: column; }
@@ -537,23 +536,19 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
   .btn-ghost { background: transparent; color: var(--header-text); border: 1px solid rgba(255,255,255,0.3); padding: 0.4rem 0.8rem; border-radius: 8px; cursor: pointer; font-size: 0.85rem; }
   .btn-ghost:hover { background: rgba(255,255,255,0.1); }
   
-  /* Tabs */
   .tabs { display: flex; gap: 0.5rem; margin: 1.5rem auto 1rem; max-width: 1200px; padding: 0 1rem; overflow-x: auto; }
   .tab { padding: 0.6rem 1.2rem; background: transparent; border: none; font-size: 1rem; font-weight: 600; color: var(--text-muted); cursor: pointer; border-bottom: 2px solid transparent; transition: 0.2s; white-space: nowrap; }
   .tab.active { color: var(--primary); border-bottom-color: var(--primary); }
   .tab:hover:not(.active) { color: var(--text); }
   
-  /* Layout */
   .container { max-width: 1200px; margin: 0 auto; padding: 0 1rem; }
   .view-section { display: none; animation: fadeIn 0.2s ease-in-out; }
   .view-section.active { display: block; }
   @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
 
-  /* Cards (Surface) */
   .card { background: var(--surface); border-radius: 16px; padding: 1.5rem; margin-bottom: 1.25rem; box-shadow: 0 2px 12px rgba(0,0,0,0.04); border: 1px solid var(--border); }
   .card h3 { margin: 0 0 1rem; font-size: 1.1rem; font-weight: 600; }
   
-  /* Forms & Buttons */
   .form-group { display: flex; gap: 0.5rem; flex-wrap: wrap; }
   input[type="text"], input[type="number"], input[type="password"] { 
     flex: 1; min-width: 200px; padding: 0.75rem 1rem; border: 1px solid var(--input-border); border-radius: 10px; background: var(--input-bg); color: var(--text); font-size: 1rem; 
@@ -566,14 +561,12 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
   .btn-danger:hover { background: var(--danger-hover); }
   .btn-small { padding: 0.4rem 0.8rem; font-size: 0.85rem; min-height: 32px; border-radius: 6px; }
 
-  /* Search & Filter Bar */
   .toolbar { display: flex; flex-wrap: wrap; gap: 1rem; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
   .search-box { flex: 1; min-width: 250px; position: relative; }
   .search-box input { width: 100%; padding-left: 2.5rem; border-radius: 10px; }
   .search-box::before { content: "🔍"; position: absolute; left: 0.8rem; top: 50%; transform: translateY(-50%); font-size: 0.9rem; opacity: 0.6; }
   .filter-box select { padding: 0.75rem 1rem; border-radius: 10px; border: 1px solid var(--input-border); background: var(--input-bg); color: var(--text); font-size: 0.95rem; cursor: pointer; min-height: 44px;}
 
-  /* Clients Table -> Responsive Cards */
   .table-wrapper { overflow-x: auto; width: 100%; }
   table { width: 100%; border-collapse: collapse; text-align: left; }
   th, td { padding: 0.875rem; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
@@ -590,13 +583,12 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
   .actions-cell { display: flex; gap: 0.4rem; flex-wrap: wrap; }
   .empty-state { text-align: center; padding: 3rem 1rem; color: var(--text-muted); }
 
-  /* Mobile Adaptation */
   @media (max-width: 768px) {
     .header-content { flex-direction: column; align-items: stretch; text-align: center; }
     .header-controls { justify-content: center; }
     
     .table-wrapper table, .table-wrapper tbody, .table-wrapper tr { display: block; width: 100%; }
-    .table-wrapper thead { display: none; /* Скрываем заголовки на мобильном */ }
+    .table-wrapper thead { display: none; }
     
     .table-wrapper tr { 
       background: var(--surface); border: 1px solid var(--border); border-radius: 12px; 
@@ -618,13 +610,11 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
     .toolbar { flex-direction: column; align-items: stretch; }
   }
 
-  /* Modals */
   .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 2000; align-items: center; justify-content: center; padding: 1rem; backdrop-filter: blur(2px); }
   .modal-content { background: var(--surface); color: var(--text); padding: 1.5rem; border-radius: 16px; width: 100%; max-width: 600px; max-height: 90vh; overflow-y: auto; position: relative; box-shadow: 0 10px 30px rgba(0,0,0,0.2); }
   .modal-close { position: absolute; top: 1rem; right: 1rem; font-size: 1.5rem; cursor: pointer; color: var(--text-muted); background: none; border: none; line-height: 1; padding: 0.5rem; }
   .modal-close:hover { color: var(--text); }
   
-  /* Loaders */
   .global-loader { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 3000; color: #fff; flex-direction: column; align-items: center; justify-content: center; }
   .spinner { width: 40px; height: 40px; border: 4px solid rgba(255,255,255,0.3); border-radius: 50%; border-top-color: var(--primary); animation: spin 1s linear infinite; margin-bottom: 1rem; }
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -667,7 +657,6 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
   __MSG__
   __ERR__
 
-  <!-- Раздел: Клиенты -->
   <div id="clients-view" class="view-section active">
     <div class="card">
       <h3 data-i18n="title_create">➕ Новый клиент</h3>
@@ -705,7 +694,6 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
             </tr>
           </thead>
           <tbody id="clients-tbody">
-            <!-- JS Rendering -->
           </tbody>
         </table>
         <div id="empty-state" class="empty-state" style="display:none;" data-i18n="empty_clients">Нет клиентов</div>
@@ -716,7 +704,6 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- Раздел: Серверы -->
   <div id="servers-view" class="view-section">
     <div class="card">
       <h3 data-i18n="servers_title">Управление выходным шлюзом (SERVER B)</h3>
@@ -744,7 +731,6 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
   </div>
 </div>
 
-<!-- Модальное окно: Обновления -->
 <div id="update-modal" class="modal">
   <div class="modal-content">
     <button class="modal-close" onclick="closeModal('update-modal')">&times;</button>
@@ -759,7 +745,6 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
   </div>
 </div>
 
-<!-- Глобальный лоадер -->
 <div id="global-loader" class="global-loader">
   <div class="spinner"></div>
   <div id="loader-text" style="font-weight: 500;">Подождите...</div>
@@ -773,23 +758,16 @@ let _currentSort = 'name';
 let _sortAsc = true;
 let _pollInterval = null;
 
-// i18n Dictionary
 const dict = {
   ru: {
     status_online: "ОНЛАЙН", status_offline: "ОФФЛАЙН", status_never: "НИКОГДА",
     btn_del: "Удалить", confirm_del: "Удалить клиента", confirm_switch: "Переключиться на сервер",
     btn_switch: "Переключить", current: "Активный"
-  },
-  en: {
-    status_online: "ONLINE", status_offline: "OFFLINE", status_never: "NEVER",
-    btn_del: "Delete", confirm_del: "Delete client", confirm_switch: "Switch to server",
-    btn_switch: "Switch", current: "Active"
   }
 };
-const lang = 'ru'; // Hardcoded fallback for now
+const lang = 'ru';
 const t = (k) => dict[lang][k] || k;
 
-// Theming
 function initTheme() {
   const saved = localStorage.getItem('theme') || 'light';
   document.documentElement.setAttribute('data-theme', saved);
@@ -803,13 +781,21 @@ function toggleTheme() {
   document.getElementById('theme-btn').textContent = next === 'dark' ? '☀️' : '🌙';
 }
 
-// UI Helpers
 function showLoader(txt) { document.getElementById('loader-text').textContent = txt; document.getElementById('global-loader').style.display = 'flex'; }
 function hideLoader() { document.getElementById('global-loader').style.display = 'none'; }
 function closeModal(id) { document.getElementById(id).style.display = 'none'; }
 function escapeHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
-// Tabs
+// ==================== Date Formatting ====================
+// Универсальная функция форматирования даты в ДД.ММ.ГГГГ ЧЧ:ММ:СС
+function formatDateTime(val) {
+  if (!val) return '';
+  const d = val instanceof Date ? val : new Date(val);
+  if (isNaN(d)) return val;
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${pad(d.getDate())}.${pad(d.getMonth()+1)}.${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
 function switchTab(tabId) {
   document.querySelectorAll('.view-section').forEach(el => el.classList.remove('active'));
   document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
@@ -824,7 +810,6 @@ function setSort(col) {
   if (_currentSort === col) { _sortAsc = !_sortAsc; } 
   else { _currentSort = col; _sortAsc = true; }
   
-  // Update UI arrows
   document.querySelectorAll('th[data-sort]').forEach(th => {
     th.classList.remove('sort-asc', 'sort-desc');
     if (th.getAttribute('data-sort') === col) {
@@ -844,9 +829,25 @@ function applyFilters() {
     return matchQuery && matchStatus;
   });
 
-  // Sorting
   filtered.sort((a, b) => {
-    let valA = a[_currentSort]; let valB = b[_currentSort];
+    let valA = a[_currentSort]; 
+    let valB = b[_currentSort];
+    
+    // Специализированный числовой компаратор для IPv4 (разбиваем на октеты)
+    if (_currentSort === 'ip') {
+        const arrA = (valA || '').split('.');
+        const arrB = (valB || '').split('.');
+        for (let i = 0; i < 4; i++) {
+          const numA = parseInt(arrA[i], 10) || 0;
+          const numB = parseInt(arrB[i], 10) || 0;
+          if (numA !== numB) {
+            return _sortAsc ? numA - numB : numB - numA;
+          }
+        }
+        return 0;
+    }
+
+    // Обычная лексикографическая или числовая сортировка
     if (typeof valA === 'string') valA = valA.toLowerCase();
     if (typeof valB === 'string') valB = valB.toLowerCase();
     if (valA < valB) return _sortAsc ? -1 : 1;
@@ -872,8 +873,6 @@ function renderClients(clients) {
   tbody.innerHTML = clients.map(c => {
     const statusClass = c.status === 'ONLINE' ? 'status-online' : (c.status === 'OFFLINE' ? 'status-offline' : 'status-never');
     const statusLabel = c.status === 'ONLINE' ? t('status_online') : (c.status === 'OFFLINE' ? t('status_offline') : t('status_never'));
-    
-    // Защита от XSS для данных URL
     const encName = encodeURIComponent(c.name);
     const safeName = escapeHtml(c.name);
     
@@ -893,7 +892,9 @@ function renderClients(clients) {
       </td>
     </tr>`;
   }).join('');
-  document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
+  
+  // Обновление формата времени для "Обновлено:"
+  document.getElementById('last-update').textContent = formatDateTime(new Date());
 }
 
 async function fetchClients() {
@@ -999,8 +1000,6 @@ async function deleteServer(sid) {
   await loadServers();
 }
 
-// ==================== Top Level Actions ====================
-
 function restartTunnels() {
   if (!confirm('Перезапустить туннели awg0 и awg1? VPN соединение прервется на пару секунд.')) return;
   const f = document.createElement('form'); f.method = 'POST'; f.action = BASE_URL + '/restart';
@@ -1017,15 +1016,14 @@ async function checkUpdates() {
     if (d.error) { alert('Ошибка: ' + d.error); }
     else if (!d.has_updates) { alert('У вас установлена последняя версия.'); }
     else {
+      // Использование новой функции formatDateTime для дат GitHub API
       document.getElementById('update-list').innerHTML = d.commits.map(c => 
-        `<div class="update-item"><div style="color:var(--text-muted);font-size:0.8rem;">${new Date(c.date).toLocaleString()}</div>${escapeHtml(c.message)}</div>`
+        `<div class="update-item"><div style="color:var(--text-muted);font-size:0.8rem;">${formatDateTime(c.date)}</div>${escapeHtml(c.message)}</div>`
       ).join('');
       document.getElementById('update-modal').style.display = 'flex';
     }
   } catch(e) { hideLoader(); alert(e); }
 }
-
-// ==================== Lifecycle ====================
 
 function startPolling() {
   if (_pollInterval) clearInterval(_pollInterval);
@@ -1033,15 +1031,14 @@ function startPolling() {
   _pollInterval = setInterval(fetchClients, 5000);
 }
 
-// Умный поллинг (экономия ресурсов, если вкладка скрыта)
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) { clearInterval(_pollInterval); } 
   else { startPolling(); }
 });
 
 initTheme();
-// Инициализируем сортировку по умолчанию
-document.querySelector('th[data-sort="name"]').classList.add('sort-asc');
+document.querySelector('th[data-sort="ip"]').classList.add('sort-asc');
+setSort('ip');
 startPolling();
 
 </script>
@@ -1089,7 +1086,6 @@ async def login_submit(username: str = Form(...), password: str = Form(...)):
     except RuntimeError:
         return RedirectResponse(f"{BASE_URL}/login?error=Config+Error", status_code=303)
     
-    # Safe comparison
     if not (hmac.compare_digest(username, u) and hmac.compare_digest(password, p)):
         return RedirectResponse(f"{BASE_URL}/login?error=Неверный+логин+или+пароль", status_code=303)
     
@@ -1118,7 +1114,6 @@ async def on_startup():
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request, message: str = "", error: str = ""):
     current_user(request)
-    # Первоначальный рендер пустого списка (JS подтянет данные сразу)
     return render_page([], message, error)
 
 @app.get("/api/clients")
@@ -1206,12 +1201,10 @@ async def api_servers_switch(request: Request, sid: int):
 @app.post("/create")
 async def create_client(request: Request, name: str = Form(...)):
     current_user(request)
-    # Жесткая очистка имени от инъекций и спецсимволов
     n = re.sub(r"[^a-zA-Z0-9_-]", "", name)
     if not n:
         return RedirectResponse(f"{BASE_URL}/?error=Недопустимое+имя+клиента", status_code=303)
     try:
-        # Вызов внешнего bash-скрипта через безопасный массив аргументов (без shell=True)
         subprocess.run([ADD_SCRIPT, n], input="y\n", capture_output=True, text=True, timeout=90, check=True)
         _notify(f"👤 <b>Новый клиент</b> (через панель)\nИмя: <code>{n}</code>")
         return RedirectResponse(f"{BASE_URL}/?message=Клиент+{n}+создан", status_code=303)
@@ -1251,7 +1244,7 @@ async def restart_tunnels(request: Request):
 @app.get("/download/conf/{name}")
 async def dl_conf(request: Request, name: str):
     current_user(request)
-    n = re.sub(r"[^a-zA-Z0-9_-]", "", name) # Защита от Path Traversal
+    n = re.sub(r"[^a-zA-Z0-9_-]", "", name)
     p = os.path.join(CLIENTS_DIR, f"{n}.conf")
     if not os.path.isfile(p): raise HTTPException(404, "Конфигурация не найдена")
     return FileResponse(p, media_type="text/plain", filename=f"{n}.conf")
