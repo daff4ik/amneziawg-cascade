@@ -74,7 +74,6 @@ def current_user(request: Request) -> str:
     except RuntimeError:
         raise HTTPException(500, "config error")
     t = request.cookies.get(SESSION_COOKIE, "")
-    # Защита от timing attacks
     if not hmac.compare_digest(t, make_token(p)):
         if request.url.path.startswith("/api/") or request.url.path.startswith("/download/"):
             raise HTTPException(401, "Unauthorized")
@@ -196,8 +195,7 @@ echo INSTALLED_OK
         f.write(script)
     try:
         ok, _, err = ssh_upload(ip, port, user, password, lp, "/tmp/_install_awg.sh")
-        if not ok:
-            return False, "", err
+        if not ok: return False, "", err
         ok, out, err = ssh_exec(ip, port, user, password, "bash /tmp/_install_awg.sh", timeout=300)
         ssh_exec(ip, port, user, password, "rm -f /tmp/_install_awg.sh", timeout=10)
         return ok, out, err
@@ -218,8 +216,7 @@ def build_de_conf(ru_conf_path, de_privkey, ru_pubkey, de_iface):
     params = {}
     for p in param_keys:
         v = get(p)
-        if v:
-            params[p] = v
+        if v: params[p] = v
     params_str = "\n".join(f"{k} = {v}" for k, v in params.items())
     return f"""[Interface]
 PrivateKey = {de_privkey}
@@ -305,8 +302,7 @@ def do_switch_server(server, password):
         for lp in files:
             rp = "/etc/amnezia/amneziawg/" + os.path.basename(lp).replace("_de_", "")
             ok, _, err = ssh_upload(ip, port, user, password, lp, rp)
-            if not ok:
-                return False, f"Ошибка загрузки {rp}: {err}"
+            if not ok: return False, f"Ошибка загрузки {rp}: {err}"
         ssh_exec(ip, port, user, password,
                  "chmod 600 /etc/amnezia/amneziawg/awg0.conf /etc/amnezia/amneziawg/private.key && "
                  "chmod 644 /etc/amnezia/amneziawg/public.key")
@@ -352,20 +348,16 @@ def do_switch_server(server, password):
 
 # ================ Traffic / clients ================
 def parse_clients():
-    if not os.path.exists(AWG_CONF):
-        return []
-    with open(AWG_CONF, encoding="utf-8") as f:
-        content = f.read()
+    if not os.path.exists(AWG_CONF): return []
+    with open(AWG_CONF, encoding="utf-8") as f: content = f.read()
     out = []
     for block in re.split(r"\n(?=\[Peer\])", content):
-        if "[Peer]" not in block:
-            continue
+        if "[Peer]" not in block: continue
         nm = re.search(r"#\s*Client:\s*(\S+)", block)
         pk = re.search(r"PublicKey\s*=\s*(\S+)", block)
         ip = re.search(r"AllowedIPs\s*=\s*([0-9.]+)", block)
         if nm and pk:
-            out.append({"name": nm.group(1), "pubkey": pk.group(1),
-                        "ip": ip.group(1) if ip else "?"})
+            out.append({"name": nm.group(1), "pubkey": pk.group(1), "ip": ip.group(1) if ip else "?"})
     return out
 
 def get_live_status():
@@ -386,17 +378,13 @@ def get_live_status():
                 elif "minutes" in s:
                     try:
                         mins = int(re.search(r"(\d+)\s+minutes", s).group(1))
-                        if mins < 3:
-                            stats[cur] = "ONLINE"
-                    except Exception:
-                        pass
+                        if mins < 3: stats[cur] = "ONLINE"
+                    except: pass
         return stats
-    except Exception:
-        return {}
+    except: return {}
 
 def fmt_handshake(ts):
     if ts == 0: return "никогда"
-    # Изменен формат даты на ДД.ММ.ГГГГ ЧЧ:ММ:СС в соответствии с ТЗ
     return datetime.datetime.fromtimestamp(ts).strftime('%d.%m.%Y %H:%M:%S')
 
 def fmt_bytes(b):
@@ -416,15 +404,12 @@ def enrich(clients):
             for row in cur.fetchall():
                 db_stats[row[0]] = {"total_rx": row[1], "total_tx": row[2], "last_handshake": row[3]}
             conn.close()
-        except Exception:
-            pass
+        except: pass
     for c in clients:
         st = db_stats.get(c["pubkey"], {})
-        # Отдаем сырые байты для сортировки в JS
         c["rx_bytes"] = st.get("total_rx", 0)
         c["tx_bytes"] = st.get("total_tx", 0)
         c["handshake_ts"] = st.get("last_handshake", 0)
-        
         c["rx"] = fmt_bytes(c["rx_bytes"])
         c["tx"] = fmt_bytes(c["tx_bytes"])
         c["handshake"] = fmt_handshake(c["handshake_ts"])
@@ -440,11 +425,9 @@ def total_traffic(clients):
             cur.execute("SELECT SUM(total_rx), SUM(total_tx) FROM client_stats")
             row = cur.fetchone()
             if row:
-                rx = row[0] or 0
-                tx = row[1] or 0
+                rx, tx = row[0] or 0, row[1] or 0
             conn.close()
-        except Exception:
-            pass
+        except: pass
     return fmt_bytes(rx), fmt_bytes(tx)
 
 # ================ HTML Templates ================
@@ -519,7 +502,6 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--font-stack); padding-bottom: 2rem; }
   a { color: var(--primary); text-decoration: none; }
-  
   *:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 
   header { background: var(--header-bg); border-bottom: 1px solid var(--header-border, transparent); padding: 1rem; position: sticky; top: 0; z-index: 100; }
@@ -561,6 +543,14 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
   .btn-danger:hover { background: var(--danger-hover); }
   .btn-small { padding: 0.4rem 0.8rem; font-size: 0.85rem; min-height: 32px; border-radius: 6px; }
 
+  /* Стили переключателя (Toggle Switch) */
+  .switch { position: relative; display: inline-block; width: 44px; height: 24px; flex-shrink: 0; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: var(--border); transition: .3s; border-radius: 24px; }
+  .slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px; background-color: white; transition: .3s; border-radius: 50%; box-shadow: 0 1px 3px rgba(0,0,0,0.3); }
+  input:checked + .slider { background-color: var(--success-border); }
+  input:checked + .slider:before { transform: translateX(20px); }
+
   .toolbar { display: flex; flex-wrap: wrap; gap: 1rem; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
   .search-box { flex: 1; min-width: 250px; position: relative; }
   .search-box input { width: 100%; padding-left: 2.5rem; border-radius: 10px; }
@@ -586,27 +576,13 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
   @media (max-width: 768px) {
     .header-content { flex-direction: column; align-items: stretch; text-align: center; }
     .header-controls { justify-content: center; }
-    
     .table-wrapper table, .table-wrapper tbody, .table-wrapper tr { display: block; width: 100%; }
     .table-wrapper thead { display: none; }
-    
-    .table-wrapper tr { 
-      background: var(--surface); border: 1px solid var(--border); border-radius: 12px; 
-      margin-bottom: 1rem; padding: 1rem; display: flex; flex-direction: column; gap: 0.5rem;
-    }
-    .table-wrapper td { 
-      display: flex; justify-content: space-between; align-items: center; 
-      padding: 0.25rem 0; border: none; font-size: 0.95rem; text-align: right;
-    }
-    .table-wrapper td::before { 
-      content: attr(data-label); color: var(--text-muted); font-size: 0.8rem; text-transform: uppercase; font-weight: 600; text-align: left; margin-right: 1rem;
-    }
-    .table-wrapper td:last-child { 
-      margin-top: 0.5rem; padding-top: 0.75rem; border-top: 1px dashed var(--border); 
-      justify-content: flex-end; width: 100%;
-    }
+    .table-wrapper tr { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 1rem; padding: 1rem; display: flex; flex-direction: column; gap: 0.5rem; }
+    .table-wrapper td { display: flex; justify-content: space-between; align-items: center; padding: 0.25rem 0; border: none; font-size: 0.95rem; text-align: right; }
+    .table-wrapper td::before { content: attr(data-label); color: var(--text-muted); font-size: 0.8rem; text-transform: uppercase; font-weight: 600; text-align: left; margin-right: 1rem; }
+    .table-wrapper td:last-child { margin-top: 0.5rem; padding-top: 0.75rem; border-top: 1px dashed var(--border); justify-content: flex-end; width: 100%; }
     .actions-cell { justify-content: flex-end; width: 100%; }
-    
     .toolbar { flex-direction: column; align-items: stretch; }
   }
 
@@ -622,7 +598,6 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
   .update-list { margin: 1rem 0; max-height: 200px; overflow-y: auto; font-size: 0.9em; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 0.5rem; }
   .update-item { padding: 0.5rem; border-bottom: 1px solid var(--border); }
   .update-item:last-child { border: none; }
-  
   .alert { padding: 1rem; border-radius: 10px; margin-bottom: 1rem; font-size: 0.95rem; font-weight: 500; display: flex; align-items: center; gap: 0.5rem; }
   .alert.ok { background: var(--success-bg); color: var(--success-text); border: 1px solid var(--success-border); }
   .alert.err { background: var(--danger-bg); color: var(--danger-text); border: 1px solid var(--danger-text); }
@@ -640,17 +615,17 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
         <div>⬇ <span class="rx-color" id="total-rx">__TOTAL_RX__</span></div>
         <div>⬆ <span class="tx-color" id="total-tx">__TOTAL_TX__</span></div>
       </div>
-      <button class="btn-ghost" onclick="checkUpdates()" data-i18n="btn_update">🔄 Обновления</button>
-      <button class="btn-ghost" onclick="restartTunnels()" data-i18n="btn_restart">⚡ Рестарт</button>
+      <button class="btn-ghost" onclick="checkUpdates()">🔄 Обновления</button>
+      <button class="btn-ghost" onclick="restartTunnels()">⚡ Рестарт</button>
       <button class="btn-ghost" onclick="toggleTheme()" id="theme-btn">🌙</button>
-      <a href="__BASE__/logout" class="btn-ghost" data-i18n="btn_logout">🚪 Выход</a>
+      <a href="__BASE__/logout" class="btn-ghost">🚪 Выход</a>
     </div>
   </div>
 </header>
 
 <div class="tabs">
-  <button class="tab active" onclick="switchTab('clients')" data-i18n="tab_clients">👥 Клиенты (<span id="clients-count">__COUNT__</span>)</button>
-  <button class="tab" onclick="switchTab('servers')" data-i18n="tab_servers">🌐 Серверы</button>
+  <button class="tab active" onclick="switchTab('clients')">👥 Клиенты (<span id="clients-count">__COUNT__</span>)</button>
+  <button class="tab" onclick="switchTab('servers')">🌐 Серверы</button>
 </div>
 
 <div class="container">
@@ -658,12 +633,25 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
   __ERR__
 
   <div id="clients-view" class="view-section active">
-    <div class="card">
-      <h3 data-i18n="title_create">➕ Новый клиент</h3>
-      <form class="form-group" method="post" action="__BASE__/create" onsubmit="showLoader('Создание клиента...');">
-        <input type="text" name="name" placeholder="Имя (латиница, цифры, - _)" pattern="[a-zA-Z0-9_-]+" required autocomplete="off">
-        <button type="submit" class="btn btn-primary" data-i18n="btn_create">Создать</button>
-      </form>
+    
+    <div class="card" style="display: flex; gap: 1rem; flex-wrap: wrap;">
+      <div style="flex: 1; min-width: 280px;">
+        <h3 style="margin-top:0;">➕ Новый клиент</h3>
+        <form class="form-group" method="post" action="__BASE__/create" onsubmit="showLoader('Создание клиента...');" style="margin-bottom:0;">
+          <input type="text" name="name" placeholder="Имя (латиница, цифры, - _)" pattern="[a-zA-Z0-9_-]+" required autocomplete="off">
+          <button type="submit" class="btn btn-primary">Создать</button>
+        </form>
+      </div>
+      <div style="border-left: 1px solid var(--border); padding-left: 1rem; min-width: 250px; display: flex; align-items: center; justify-content: space-between; gap: 1rem;">
+        <div>
+          <div style="font-weight: 600; font-size: 1rem; margin-bottom: 0.25rem;">Внутрисетевая связь (LAN)</div>
+          <div style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.3;">Позволяет VPN-клиентам<br>взаимодействовать друг с другом</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="lan-toggle" onchange="toggleLanStatus()">
+          <span class="slider"></span>
+        </label>
+      </div>
     </div>
 
     <div class="card">
@@ -673,7 +661,7 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
         </div>
         <div class="filter-box">
           <select id="status-filter" onchange="applyFilters()">
-            <option value="all" data-i18n="filter_all">Все статусы</option>
+            <option value="all">Все статусы</option>
             <option value="ONLINE">Онлайн</option>
             <option value="OFFLINE">Офлайн</option>
           </select>
@@ -684,29 +672,28 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
         <table>
           <thead>
             <tr>
-              <th data-sort="name" onclick="setSort('name')" data-i18n="th_name">Имя</th>
-              <th data-sort="ip" onclick="setSort('ip')" data-i18n="th_ip">IP</th>
-              <th data-sort="status" onclick="setSort('status')" data-i18n="th_status">Статус</th>
-              <th data-sort="rx_bytes" onclick="setSort('rx_bytes')" data-i18n="th_rx">RX</th>
-              <th data-sort="tx_bytes" onclick="setSort('tx_bytes')" data-i18n="th_tx">TX</th>
-              <th data-sort="handshake_ts" onclick="setSort('handshake_ts')" data-i18n="th_handshake">Handshake</th>
-              <th data-i18n="th_actions" style="text-align: right;">Действия</th>
+              <th data-sort="name" onclick="setSort('name')">Имя</th>
+              <th data-sort="ip" onclick="setSort('ip')">IP</th>
+              <th data-sort="status" onclick="setSort('status')">Статус</th>
+              <th data-sort="rx_bytes" onclick="setSort('rx_bytes')">RX</th>
+              <th data-sort="tx_bytes" onclick="setSort('tx_bytes')">TX</th>
+              <th data-sort="handshake_ts" onclick="setSort('handshake_ts')">Handshake</th>
+              <th style="text-align: right;">Действия</th>
             </tr>
           </thead>
-          <tbody id="clients-tbody">
-          </tbody>
+          <tbody id="clients-tbody"></tbody>
         </table>
-        <div id="empty-state" class="empty-state" style="display:none;" data-i18n="empty_clients">Нет клиентов</div>
+        <div id="empty-state" class="empty-state" style="display:none;">Нет клиентов</div>
       </div>
       <div style="text-align: right; font-size: 0.75rem; color: var(--text-muted); margin-top: 1rem;">
-        <span data-i18n="updated">Обновлено:</span> <span id="last-update">--:--:--</span>
+        Обновлено: <span id="last-update">--:--:--</span>
       </div>
     </div>
   </div>
 
   <div id="servers-view" class="view-section">
     <div class="card">
-      <h3 data-i18n="servers_title">Управление выходным шлюзом (SERVER B)</h3>
+      <h3 style="margin-top:0;">Управление выходным шлюзом (SERVER B)</h3>
       <p style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 1rem;">Здесь можно добавить новый VPS за рубежом и переключить на него весь трафик туннеля.</p>
       <div class="table-wrapper">
         <table id="servers-table">
@@ -728,6 +715,23 @@ PAGE_TEMPLATE = r"""<!DOCTYPE html>
         <button class="btn btn-primary" id="add-server-btn" onclick="addServer()">Проверить и добавить</button>
       </div>
     </div>
+  </div>
+</div>
+
+<!-- Модальное окно: LAN -->
+<div id="lan-modal" class="modal">
+  <div class="modal-content">
+    <button class="modal-close" onclick="closeModal('lan-modal')">&times;</button>
+    <h3>🌐 Внутрисетевая связь (LAN) активирована</h3>
+    <p style="font-size: 0.95rem;">Теперь ваши устройства, подключенные к этому VPN, объединены в общую виртуальную сеть (10.8.0.x) и могут взаимодействовать друг с другом напрямую.</p>
+    <div style="background: var(--bg); padding: 1rem; border-radius: 8px; border: 1px solid var(--border);">
+      <p style="margin-top:0; font-size: 0.9rem; font-weight:600;">Проверка связи:</p>
+      <p style="font-size: 0.85rem; margin-bottom: 0.5rem;">Попробуйте пропинговать IP-адрес нужного устройства. Если пинг не проходит на устройство с Windows, выполните на нём в PowerShell от имени Администратора:</p>
+      <code style="display:block; padding: 0.75rem; background: #000; color: #4ade80; border-radius: 6px; font-size: 0.8rem; overflow-x: auto;">
+New-NetFirewallRule -DisplayName "Allow Ping from VPN" -Direction Inbound -Protocol ICMPv4 -IcmpType 8 -RemoteAddress 10.8.0.0/24 -Action Allow
+      </code>
+    </div>
+    <button class="btn btn-primary" style="margin-top: 1rem; width: 100%;" onclick="closeModal('lan-modal')">Понятно, закрыть</button>
   </div>
 </div>
 
@@ -758,16 +762,6 @@ let _currentSort = 'name';
 let _sortAsc = true;
 let _pollInterval = null;
 
-const dict = {
-  ru: {
-    status_online: "ОНЛАЙН", status_offline: "ОФФЛАЙН", status_never: "НИКОГДА",
-    btn_del: "Удалить", confirm_del: "Удалить клиента", confirm_switch: "Переключиться на сервер",
-    btn_switch: "Переключить", current: "Активный"
-  }
-};
-const lang = 'ru';
-const t = (k) => dict[lang][k] || k;
-
 function initTheme() {
   const saved = localStorage.getItem('theme') || 'light';
   document.documentElement.setAttribute('data-theme', saved);
@@ -786,8 +780,6 @@ function hideLoader() { document.getElementById('global-loader').style.display =
 function closeModal(id) { document.getElementById(id).style.display = 'none'; }
 function escapeHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
-// ==================== Date Formatting ====================
-// Универсальная функция форматирования даты в ДД.ММ.ГГГГ ЧЧ:ММ:СС
 function formatDateTime(val) {
   if (!val) return '';
   const d = val instanceof Date ? val : new Date(val);
@@ -804,17 +796,48 @@ function switchTab(tabId) {
   if (tabId === 'servers') loadServers();
 }
 
-// ==================== Clients Logic ====================
+// ==================== LAN Settings ====================
+async function initLanStatus() {
+  try {
+    const r = await fetch(BASE_URL + '/api/lan/status', {credentials:'same-origin'});
+    if (r.ok) {
+        const d = await r.json();
+        document.getElementById('lan-toggle').checked = d.enabled;
+    }
+  } catch(e) {}
+}
 
+async function toggleLanStatus() {
+  const chk = document.getElementById('lan-toggle');
+  const enable = chk.checked;
+  
+  showLoader('Применение правил маршрутизации...');
+  try {
+    const r = await fetch(BASE_URL + '/api/lan/toggle', {
+        method: 'POST', credentials:'same-origin', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({enabled: enable})
+    });
+    if (!r.ok) throw new Error('Ошибка сервера');
+    
+    if (enable) {
+        document.getElementById('lan-modal').style.display = 'flex';
+    }
+  } catch (e) {
+    chk.checked = !enable; // Откат UI
+    alert('Ошибка при изменении сетевых настроек: ' + e.message);
+  } finally {
+    hideLoader();
+  }
+}
+
+// ==================== Clients ====================
 function setSort(col) {
   if (_currentSort === col) { _sortAsc = !_sortAsc; } 
   else { _currentSort = col; _sortAsc = true; }
   
   document.querySelectorAll('th[data-sort]').forEach(th => {
     th.classList.remove('sort-asc', 'sort-desc');
-    if (th.getAttribute('data-sort') === col) {
-      th.classList.add(_sortAsc ? 'sort-asc' : 'sort-desc');
-    }
+    if (th.getAttribute('data-sort') === col) th.classList.add(_sortAsc ? 'sort-asc' : 'sort-desc');
   });
   applyFilters();
 }
@@ -830,24 +853,17 @@ function applyFilters() {
   });
 
   filtered.sort((a, b) => {
-    let valA = a[_currentSort]; 
-    let valB = b[_currentSort];
-    
-    // Специализированный числовой компаратор для IPv4 (разбиваем на октеты)
+    let valA = a[_currentSort]; let valB = b[_currentSort];
     if (_currentSort === 'ip') {
         const arrA = (valA || '').split('.');
         const arrB = (valB || '').split('.');
         for (let i = 0; i < 4; i++) {
           const numA = parseInt(arrA[i], 10) || 0;
           const numB = parseInt(arrB[i], 10) || 0;
-          if (numA !== numB) {
-            return _sortAsc ? numA - numB : numB - numA;
-          }
+          if (numA !== numB) return _sortAsc ? numA - numB : numB - numA;
         }
         return 0;
     }
-
-    // Обычная лексикографическая или числовая сортировка
     if (typeof valA === 'string') valA = valA.toLowerCase();
     if (typeof valB === 'string') valB = valB.toLowerCase();
     if (valA < valB) return _sortAsc ? -1 : 1;
@@ -864,15 +880,13 @@ function renderClients(clients) {
   document.getElementById('clients-count').textContent = _allClients.length;
   
   if (clients.length === 0) {
-    tbody.innerHTML = '';
-    empty.style.display = 'block';
-    return;
+    tbody.innerHTML = ''; empty.style.display = 'block'; return;
   }
   empty.style.display = 'none';
 
   tbody.innerHTML = clients.map(c => {
     const statusClass = c.status === 'ONLINE' ? 'status-online' : (c.status === 'OFFLINE' ? 'status-offline' : 'status-never');
-    const statusLabel = c.status === 'ONLINE' ? t('status_online') : (c.status === 'OFFLINE' ? t('status_offline') : t('status_never'));
+    const statusLabel = c.status === 'ONLINE' ? 'ОНЛАЙН' : (c.status === 'OFFLINE' ? 'ОФФЛАЙН' : 'НИКОГДА');
     const encName = encodeURIComponent(c.name);
     const safeName = escapeHtml(c.name);
     
@@ -886,14 +900,12 @@ function renderClients(clients) {
       <td data-label="Действия" class="actions-cell">
         <a href="${BASE_URL}/download/conf/${encName}" class="btn btn-small" title="Скачать .conf">.conf</a>
         <a href="${BASE_URL}/download/vpn/${encName}" class="btn btn-small" title="Amnezia Link">vpn://</a>
-        <form method="post" action="${BASE_URL}/delete/${encName}" onsubmit="return confirm('${t('confirm_del')} ${safeName}?');" style="margin:0;">
-          <button type="submit" class="btn btn-small btn-danger" title="${t('btn_del')}">×</button>
+        <form method="post" action="${BASE_URL}/delete/${encName}" onsubmit="return confirm('Удалить клиента ${safeName}?');" style="margin:0;">
+          <button type="submit" class="btn btn-small btn-danger" title="Удалить">×</button>
         </form>
       </td>
     </tr>`;
   }).join('');
-  
-  // Обновление формата времени для "Обновлено:"
   document.getElementById('last-update').textContent = formatDateTime(new Date());
 }
 
@@ -901,42 +913,30 @@ async function fetchClients() {
   try {
     const r = await fetch(BASE_URL + '/api/clients', {credentials:'same-origin', cache:'no-store'});
     if (r.status === 401) { location.reload(); return; }
-    if (!r.ok) return;
-    _allClients = await r.json();
-    applyFilters();
-  } catch (e) { console.error('Fetch error:', e); }
+    if (r.ok) { _allClients = await r.json(); applyFilters(); }
+  } catch (e) { console.error(e); }
 }
 
-// ==================== Servers Logic ====================
-
+// ==================== Servers ====================
 async function loadServers() {
   try {
     const r = await fetch(BASE_URL + '/api/servers', {credentials:'same-origin'});
     if (!r.ok) return;
     _serversData = await r.json();
-    
     const tbody = document.getElementById('servers-tbody');
     if (!_serversData.servers.length) {
       tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-muted);">Нет добавленных серверов</td></tr>';
       return;
     }
-    
     tbody.innerHTML = _serversData.servers.map(s => {
       const isActive = s.id === _serversData.active_id;
-      const statusHtml = isActive ? `<span class="status-badge status-online">${t('current')}</span>` : `<span class="status-badge status-never">Ожидает</span>`;
-      
+      const statusHtml = isActive ? `<span class="status-badge status-online">Активный</span>` : `<span class="status-badge status-never">Ожидает</span>`;
       const safeName = escapeHtml(s.name);
       let actions = isActive 
         ? `<span style="color:var(--text-muted); font-size: 0.85rem;">Используется</span>`
-        : `<button class="btn btn-small btn-primary" onclick="switchServer(${s.id}, '${safeName.replace(/'/g, "\\'")}')">${t('btn_switch')}</button>
+        : `<button class="btn btn-small btn-primary" onclick="switchServer(${s.id}, '${safeName.replace(/'/g, "\\'")}')">Переключить</button>
            <button class="btn btn-small btn-danger" onclick="deleteServer(${s.id})">×</button>`;
-           
-      return `<tr>
-        <td data-label="Имя"><strong>${safeName}</strong></td>
-        <td data-label="IP">${escapeHtml(s.ip)}</td>
-        <td data-label="Статус">${statusHtml}</td>
-        <td data-label="Действия" style="text-align:right;">${actions}</td>
-      </tr>`;
+      return `<tr><td data-label="Имя"><strong>${safeName}</strong></td><td data-label="IP">${escapeHtml(s.ip)}</td><td data-label="Статус">${statusHtml}</td><td data-label="Действия" style="text-align:right;">${actions}</td></tr>`;
     }).join('');
   } catch (e) { console.error(e); }
 }
@@ -947,12 +947,9 @@ async function addServer() {
   const user = document.getElementById('add-user').value.trim() || 'root';
   const name = document.getElementById('add-name').value.trim() || ip;
   const pass = document.getElementById('add-pass').value;
-  
   if (!ip || !pass) { alert('IP и пароль обязательны!'); return; }
-  
   const btn = document.getElementById('add-server-btn');
   btn.disabled = true; btn.textContent = '⏳ Подключение...';
-  
   try {
     const r = await fetch(BASE_URL + '/api/servers/add', {
       method: 'POST', credentials:'same-origin', headers: {'Content-Type':'application/json'},
@@ -960,23 +957,16 @@ async function addServer() {
     });
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || 'Server error');
-    
-    document.getElementById('add-ip').value = '';
-    document.getElementById('add-pass').value = '';
-    document.getElementById('add-name').value = '';
+    document.getElementById('add-ip').value = ''; document.getElementById('add-pass').value = ''; document.getElementById('add-name').value = '';
     await loadServers();
-  } catch(e) {
-    alert('Ошибка: ' + e.message);
-  } finally {
-    btn.disabled = false; btn.textContent = 'Проверить и добавить';
-  }
+  } catch(e) { alert('Ошибка: ' + e.message); } 
+  finally { btn.disabled = false; btn.textContent = 'Проверить и добавить'; }
 }
 
 async function switchServer(sid, name) {
-  if (!confirm(`${t('confirm_switch')} ${name}?\n\nВам нужно будет ввести SSH-пароль от этого сервера.`)) return;
+  if (!confirm(`Переключиться на сервер ${name}?\nВам нужно будет ввести его SSH-пароль.`)) return;
   const pass = prompt(`SSH-пароль для ${name}:`);
   if (!pass) return;
-  
   showLoader(`Настройка туннеля на ${name}... Не закрывайте страницу!`);
   try {
     const r = await fetch(BASE_URL + `/api/servers/switch/${sid}`, {
@@ -987,11 +977,8 @@ async function switchServer(sid, name) {
     if (!r.ok) throw new Error(d.error || 'Switch failed');
     alert('✅ Успешно! ' + (d.message || ''));
     await loadServers();
-  } catch (e) {
-    alert('❌ Ошибка: ' + e.message);
-  } finally {
-    hideLoader();
-  }
+  } catch (e) { alert('❌ Ошибка: ' + e.message); } 
+  finally { hideLoader(); }
 }
 
 async function deleteServer(sid) {
@@ -1016,7 +1003,6 @@ async function checkUpdates() {
     if (d.error) { alert('Ошибка: ' + d.error); }
     else if (!d.has_updates) { alert('У вас установлена последняя версия.'); }
     else {
-      // Использование новой функции formatDateTime для дат GitHub API
       document.getElementById('update-list').innerHTML = d.commits.map(c => 
         `<div class="update-item"><div style="color:var(--text-muted);font-size:0.8rem;">${formatDateTime(c.date)}</div>${escapeHtml(c.message)}</div>`
       ).join('');
@@ -1032,11 +1018,12 @@ function startPolling() {
 }
 
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden) { clearInterval(_pollInterval); } 
-  else { startPolling(); }
+  if (document.hidden) clearInterval(_pollInterval); 
+  else startPolling();
 });
 
 initTheme();
+initLanStatus();
 document.querySelector('th[data-sort="ip"]').classList.add('sort-asc');
 setSort('ip');
 startPolling();
@@ -1121,6 +1108,61 @@ async def api_clients(request: Request):
     current_user(request)
     return JSONResponse(enrich(parse_clients()))
 
+# --- API Локальной Сети (LAN) ---
+@app.get("/api/lan/status")
+async def api_lan_status(request: Request):
+    current_user(request)
+    enabled = False
+    try:
+        with open(AWG_CONF, "r", encoding="utf-8") as f:
+            enabled = "iptables -I FORWARD -i awg1 -o awg1 -j ACCEPT" in f.read()
+    except Exception:
+        pass
+    return JSONResponse({"enabled": enabled})
+
+@app.post("/api/lan/toggle")
+async def api_lan_toggle(request: Request):
+    current_user(request)
+    body = await request.json()
+    enable = bool(body.get("enabled", False))
+    
+    lan_rules = [
+        "PostUp = iptables -I FORWARD -i awg1 -o awg1 -j ACCEPT\n",
+        "PostUp = ip route add 10.8.0.0/24 dev awg1 table 100 || true\n",
+        "PostDown = iptables -D FORWARD -i awg1 -o awg1 -j ACCEPT\n",
+        "PostDown = ip route del 10.8.0.0/24 dev awg1 table 100 || true\n"
+    ]
+    
+    try:
+        with open(AWG_CONF, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        
+        # Очищаем конфиг от этих правил на случай, если они уже есть
+        clean_lines = [l for l in lines if l not in lan_rules]
+        
+        if enable:
+            # Вставляем правила перед секцией [Peer] или в конец блока Interface
+            insert_idx = len(clean_lines)
+            for i, line in enumerate(clean_lines):
+                if line.strip().startswith("[Peer]"):
+                    insert_idx = i
+                    break
+            clean_lines = clean_lines[:insert_idx] + lan_rules + clean_lines[insert_idx:]
+            
+        with open(AWG_CONF, "w", encoding="utf-8") as f:
+            f.writelines(clean_lines)
+            
+        # Мягкий рестарт клиентского интерфейса
+        subprocess.run(["systemctl", "restart", "awg-quick@awg1"], capture_output=True, check=True)
+        
+        state_str = "ВКЛЮЧЕНА" if enable else "ВЫКЛЮЧЕНА"
+        _notify(f"🌐 <b>Локальная сеть (LAN)</b>\nСвязь между клиентами {state_str}")
+        
+        return JSONResponse({"ok": True})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+# ---------------------------------
+
 @app.get("/api/check_update")
 async def api_check_update(request: Request):
     current_user(request)
@@ -1159,16 +1201,14 @@ async def api_servers_add(request: Request):
     current_user(request)
     body = await request.json()
     result = await run_in_threadpool(_add_server_sync, body)
-    if "error" in result:
-        return JSONResponse(result, status_code=400)
+    if "error" in result: return JSONResponse(result, status_code=400)
     return result
 
 @app.delete("/api/servers/{sid}")
 async def api_servers_del(request: Request, sid: int):
     current_user(request)
     data = load_servers()
-    if data.get("active_id") == sid:
-        return JSONResponse({"error": "Нельзя удалить активный сервер"}, status_code=400)
+    if data.get("active_id") == sid: return JSONResponse({"error": "Нельзя удалить активный сервер"}, status_code=400)
     data["servers"] = [s for s in data["servers"] if s["id"] != sid]
     save_servers(data)
     return {"ok": True}
@@ -1176,19 +1216,13 @@ async def api_servers_del(request: Request, sid: int):
 @app.post("/api/servers/switch/{sid}")
 async def api_servers_switch(request: Request, sid: int):
     current_user(request)
-    try:
-        body = await request.json()
-        password = body.get("password", "")
-    except Exception:
-        password = ""
-    if not password:
-        return JSONResponse({"error": "Требуется SSH-пароль"}, status_code=400)
+    try: body = await request.json(); password = body.get("password", "")
+    except Exception: password = ""
+    if not password: return JSONResponse({"error": "Требуется SSH-пароль"}, status_code=400)
     data = load_servers()
     server = next((s for s in data["servers"] if s["id"] == sid), None)
-    if not server:
-        return JSONResponse({"error": "Сервер не найден"}, status_code=404)
-    if data.get("active_id") == sid:
-        return JSONResponse({"error": "Этот сервер уже активен"}, status_code=400)
+    if not server: return JSONResponse({"error": "Сервер не найден"}, status_code=404)
+    if data.get("active_id") == sid: return JSONResponse({"error": "Этот сервер уже активен"}, status_code=400)
     
     ok, msg = await run_in_threadpool(do_switch_server, server, password)
     if ok:
@@ -1202,8 +1236,7 @@ async def api_servers_switch(request: Request, sid: int):
 async def create_client(request: Request, name: str = Form(...)):
     current_user(request)
     n = re.sub(r"[^a-zA-Z0-9_-]", "", name)
-    if not n:
-        return RedirectResponse(f"{BASE_URL}/?error=Недопустимое+имя+клиента", status_code=303)
+    if not n: return RedirectResponse(f"{BASE_URL}/?error=Недопустимое+имя+клиента", status_code=303)
     try:
         subprocess.run([ADD_SCRIPT, n], input="y\n", capture_output=True, text=True, timeout=90, check=True)
         _notify(f"👤 <b>Новый клиент</b> (через панель)\nИмя: <code>{n}</code>")
@@ -1232,11 +1265,9 @@ async def restart_tunnels(request: Request):
     res = []
     for iface in ("awg0", "awg1"):
         try:
-            subprocess.run(["systemctl", "restart", f"awg-quick@{iface}"],
-                           capture_output=True, timeout=30, check=True)
+            subprocess.run(["systemctl", "restart", f"awg-quick@{iface}"], capture_output=True, timeout=30, check=True)
             res.append(f"{iface}: OK")
-        except Exception:
-            res.append(f"{iface}: FAIL")
+        except Exception: res.append(f"{iface}: FAIL")
     msg = " | ".join(res)
     _notify(f"🔄 <b>Перезапуск</b>\n{msg}")
     return RedirectResponse(f"{BASE_URL}/?message={msg.replace(' ','+')}", status_code=303)
@@ -1258,16 +1289,8 @@ async def dl_vpn(request: Request, name: str):
     return FileResponse(p, media_type="text/plain", filename=f"{n}.vpn.txt")
 
 if __name__ == "__main__":
-    kwargs = {
-        "host": BIND_HOST,
-        "port": 8000,
-        "log_level": "info",
-        "access_log": False,
-        "server_header": False,
-    }
-    
+    kwargs = { "host": BIND_HOST, "port": 8000, "log_level": "info", "access_log": False, "server_header": False }
     if USE_SSL:
         kwargs["ssl_keyfile"] = "/etc/amnezia-panel-ssl/key.pem"
         kwargs["ssl_certfile"] = "/etc/amnezia-panel-ssl/cert.pem"
-
     uvicorn.run(app, **kwargs)
