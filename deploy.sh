@@ -1,6 +1,6 @@
 #!/bin/bash
 # =====================================================================
-#  AmneziaWG Cascade Deploy
+#  AmneziaWG Cascade Deploy by David (daff4ik)
 #  Запускать на SERVER-A (входном) от root.
 #
 #  Использование:
@@ -57,23 +57,18 @@ if [[ $UPDATE_MODE -eq 1 ]]; then
     fi
     say "Режим обновления: SERVER-B не затрагивается"
     
-    # Определяем IP этого сервера
     RU_IP=$(hostname -I | awk '{print $1}')
     [[ -z "$RU_IP" ]] && { err "Не удалось определить IP этого сервера"; exit 1; }
 
-    # Пытаемся вытащить существующее имя сервера из скрипта amnezia-add-client.sh
-    # (потому что туда оно уже было жестко вшито при прошлой установке)
     OLD_SERVER_NAME=""
     if [[ -f /usr/local/bin/amnezia-add-client.sh ]]; then
         OLD_SERVER_NAME=$(grep -oP '^SERVER_NAME="\K[^"]+' /usr/local/bin/amnezia-add-client.sh | head -1 || echo "")
     fi
     
-    # Если в скрипте не нашли, ищем в панели
     if [[ -z "$OLD_SERVER_NAME" || "$OLD_SERVER_NAME" == "__SERVER_NAME__" ]] && [[ -f /opt/amnezia-panel.py ]]; then
         OLD_SERVER_NAME=$(grep -oP 'SERVER_LABEL\s*=\s*"\K[^"]+' /opt/amnezia-panel.py | head -1 || echo "")
     fi
 
-    # Спрашиваем пользователя
     if [[ -n "$OLD_SERVER_NAME" && "$OLD_SERVER_NAME" != "__SERVER_LABEL__" && "$OLD_SERVER_NAME" != "__SERVER_NAME__" ]]; then
         echo "Текущее имя сервера: [$OLD_SERVER_NAME]"
         read -p "Сохранить текущее имя сервера? (y/n) [y]: " KEEP_NAME
@@ -84,7 +79,6 @@ if [[ $UPDATE_MODE -eq 1 ]]; then
             read -p "Введите новое имя сервера: " SERVER_NAME
         fi
     else
-        # Если старое имя вообще не найдено
         read -p "Название сервера для AmneziaVPN (например, 'LALLUZA'): " SERVER_NAME
     fi
     
@@ -98,9 +92,15 @@ if [[ $UPDATE_MODE -eq 1 ]]; then
         INSTALL_PANEL="${INSTALL_PANEL:-y}"
     fi
 
+    read -p "Настроить/перенастроить Stealth-режим (Nginx-заглушка)? (y/n) [n]: " SETUP_STEALTH
+    SETUP_STEALTH="${SETUP_STEALTH:-n}"
+
+    read -p "Установить/обновить Fail2Ban (защита от брутфорса)? (y/n) [y]: " INSTALL_F2B
+    INSTALL_F2B="${INSTALL_F2B:-y}"
+
     ok "Параметры для обновления получены"
 else
-    # --- Полная установка: запрашиваем всё ---
+    # --- Полная установка ---
     read -p "IP-адрес этого сервера (SERVER-A): " RU_IP
     [[ -z "$RU_IP" ]] && { err "IP обязателен"; exit 1; }
 
@@ -121,6 +121,9 @@ else
 
     read -p "Установить веб-панель? (y/n) [n]: " INSTALL_PANEL
     INSTALL_PANEL="${INSTALL_PANEL:-n}"
+
+    read -p "Установить Fail2Ban (защита сервера от брутфорса)? (y/n) [y]: " INSTALL_F2B
+    INSTALL_F2B="${INSTALL_F2B:-y}"
 fi
 
 # =====================================================================
@@ -155,7 +158,6 @@ SCRIPTS_TO_DOWNLOAD=(
     amnezia-panel-access.sh
 )
 
-# Массив зеркал для обхода блокировки GitHub Raw в РФ
 MIRRORS=(
     "https://raw.githubusercontent.com/daff4ik/amneziawg-cascade/main"
     "https://ghproxy.net/https://raw.githubusercontent.com/daff4ik/amneziawg-cascade/main"
@@ -211,6 +213,27 @@ sysctl --system >/dev/null 2>&1 || true
 ok "AmneziaWG на SERVER-A готов"
 
 # =====================================================================
+#  Fail2Ban (Защита от брутфорса)
+# =====================================================================
+if [[ "$INSTALL_F2B" =~ ^[yYдД] ]]; then
+    say "Настройка Fail2Ban (Защита SSH)"
+    apt install -y -qq fail2ban
+    cat > /etc/fail2ban/jail.local <<EOF
+[sshd]
+enabled = true
+port = ssh
+filter = sshd
+logpath = /var/log/auth.log
+maxretry = 5
+bantime = 3600
+findtime = 600
+EOF
+    systemctl enable fail2ban
+    systemctl restart fail2ban
+    ok "Fail2Ban активирован"
+fi
+
+# =====================================================================
 #  Настройка туннеля (ТОЛЬКО при полной установке)
 # =====================================================================
 if [[ $UPDATE_MODE -eq 0 ]]; then
@@ -252,7 +275,6 @@ echo INSTALLED
 REMOTE_EOF
     ok "AmneziaWG на SERVER-B готов"
 
-    # ---------- Генерация параметров ----------
     say "Генерация параметров обфускации"
     gen_ranges() {
         python3 - <<'PY'
@@ -294,7 +316,6 @@ PY
     read H1_C H2_C H3_C H4_C <<< "$(gen_ranges)"
     ok "Параметры сгенерированы"
 
-    # ---------- Ключи awg0 ----------
     say "Генерация ключей"
     mkdir -p "$AWG_DIR" && chmod 700 "$AWG_DIR"
     cd "$AWG_DIR"
@@ -317,7 +338,6 @@ PY
     [[ -z "$DE_IFACE" ]] && { err "Не удалось определить внешний интерфейс SERVER-B"; exit 1; }
     ok "Внешний интерфейс SERVER-B: $DE_IFACE"
 
-    # ---------- Конфиги awg0 ----------
     say "Настройка туннеля awg0"
     cat > "$AWG_DIR/awg0.conf" <<EOF
 [Interface]
@@ -416,7 +436,6 @@ EOF
     rm -f /tmp/awg0-de.conf
     ok "Конфиги awg0 записаны"
 
-    # ---------- Запуск awg0 ----------
     say "Запуск межсерверного туннеля"
     run_de "systemctl enable awg-quick@awg0 && systemctl restart awg-quick@awg0"
     sleep 2
@@ -431,7 +450,6 @@ EOF
         exit 1
     fi
 
-    # ---------- Клиентский интерфейс awg1 ----------
     say "Настройка клиентского интерфейса awg1"
     if [[ ! -f "$AWG_DIR/awg1_private.key" ]]; then
         umask 077
@@ -475,10 +493,10 @@ EOF
     systemctl restart awg-quick@awg1
     sleep 2
     ok "awg1 поднят"
-fi  # <-- КОНЕЦ блока "полная установка"
+fi
 
 # =====================================================================
-#  Установка helper-скриптов (всегда)
+#  Установка helper-скриптов
 # =====================================================================
 say "Установка helper-скриптов"
 mkdir -p /root/clients && chmod 700 /root/clients
@@ -496,9 +514,6 @@ for script in "${SCRIPTS_TO_DOWNLOAD[@]}"; do
 done
 ok "Скрипты установлены в /usr/local/bin/"
 
-# =====================================================================
-#  Установка cron
-# =====================================================================
 say "Настройка cron"
 apt install -y -qq sqlite3 >/dev/null 2>&1 || true
 mkdir -p /var/lib/amnezia-panel
@@ -510,7 +525,6 @@ if [[ -x /usr/local/bin/amnezia-healthcheck.sh ]]; then
 0 * * * * root /usr/local/bin/amnezia-healthcheck.sh
 EOF
     chmod 644 /etc/cron.d/amnezia-healthcheck
-    ok "cron: healthcheck (каждый час)"
 fi
 
 if [[ -x /usr/local/bin/amnezia-traffic-collector.py ]]; then
@@ -519,12 +533,9 @@ if [[ -x /usr/local/bin/amnezia-traffic-collector.py ]]; then
 EOF
     chmod 644 /etc/cron.d/amnezia-traffic
     /usr/local/bin/amnezia-traffic-collector.py 2>/dev/null || true
-    ok "cron: traffic collector (каждые 5 минут)"
 fi
+ok "cron настроен"
 
-# =====================================================================
-#  Первый клиент admin (только при полной установке)
-# =====================================================================
 if [[ $UPDATE_MODE -eq 0 ]]; then
     say "Создание первого клиента (admin)"
     if [[ ! -f /root/clients/admin.conf ]] && [[ -x /usr/local/bin/amnezia-add-client.sh ]]; then
@@ -535,14 +546,14 @@ if [[ $UPDATE_MODE -eq 0 ]]; then
 fi
 
 # =====================================================================
-#  Веб-панель
+#  Установка веб-панели
 # =====================================================================
 if [[ "$INSTALL_PANEL" =~ ^[yYдД] ]]; then
     say "Установка веб-панели"
 
     if [[ $UPDATE_MODE -eq 1 && -f /etc/amnezia-panel.conf ]]; then
-        PANEL_USER=$(grep -oP '^username=\K.*' /etc/amnezia-panel.conf || echo admin)
-        PANEL_PASS=$(grep -oP '^password=\K.*' /etc/amnezia-panel.conf || echo "")
+        PANEL_USER=$(awk -F'=' '/^username/ {print $2}' /etc/amnezia-panel.conf || echo admin)
+        PANEL_PASS=$(awk -F'=' '/^password/ {print $2}' /etc/amnezia-panel.conf || echo "")
         AUTH_CHOICE="keep"
         ok "Учётные данные панели сохраняются"
     else
@@ -565,17 +576,15 @@ if [[ "$INSTALL_PANEL" =~ ^[yYдД] ]]; then
                     [[ "$PANEL_PASS" != "$PANEL_PASS2" ]] && { warn "Пароли не совпадают, попробуйте снова"; continue; }
                     break
                 done
-                ok "Учётные данные приняты"
                 ;;
             *)
                 PANEL_USER="admin"
                 PANEL_PASS=$(openssl rand -base64 24 | tr -d '/+=' | head -c 24)
-                ok "Учётные данные сгенерированы автоматически"
                 ;;
         esac
     fi
 
-   echo "  ↓ Скачивание файлов веб-панели"
+    echo "  ↓ Скачивание файлов веб-панели"
     PANEL_DL_OK=0
     for mirror in "${MIRRORS[@]}"; do
         if curl -fsSL --connect-timeout 5 --max-time 15 "$mirror/web-panel/amnezia-panel.py" -o /tmp/amnezia-panel.py && \
@@ -584,16 +593,12 @@ if [[ "$INSTALL_PANEL" =~ ^[yYдД] ]]; then
             break
         fi
     done
-    
-    if [[ $PANEL_DL_OK -eq 0 ]]; then
-        err "Не удалось скачать файлы панели ни с одного зеркала"
-        exit 1
-    fi
+    [[ $PANEL_DL_OK -eq 0 ]] && { err "Не удалось скачать файлы панели"; exit 1; }
 
     apt install -y -qq python3-venv
     python3 -m venv /opt/amnezia-panel-venv
     /opt/amnezia-panel-venv/bin/pip install --quiet --upgrade pip
-    /opt/amnezia-panel-venv/bin/pip install --quiet fastapi 'uvicorn[standard]' python-multipart qrcode
+    /opt/amnezia-panel-venv/bin/pip install --quiet fastapi 'uvicorn[standard]' python-multipart
 
     sed "s|__SERVER_LABEL__|$SERVER_NAME|g" /tmp/amnezia-panel.py > /opt/amnezia-panel.py
     chmod 700 /opt/amnezia-panel.py
@@ -620,77 +625,91 @@ EOF
     systemctl enable amnezia-panel
     systemctl restart amnezia-panel
     sleep 2
-
-if systemctl is-active --quiet amnezia-panel; then
-        ok "Веб-панель запущена"
-        
-        # --- БРОНЕБОЙНЫЙ ПАРСИНГ STEALTH-РЕЖИМА ---
-        P_CONF="/etc/amnezia-panel.conf"
-        P_HOST=$(awk -F'=' '/^host/ {print $2}' "$P_CONF" 2>/dev/null | tr -d ' \r\n')
-        [[ -z "$P_HOST" ]] && P_HOST="0.0.0.0"
-        
-        P_BASE=$(awk -F'=' '/^base_url/ {print $2}' "$P_CONF" 2>/dev/null | tr -d ' \r\n')
-        
-        P_DOMAIN=""
-        if [[ "$P_HOST" == "127.0.0.1" ]] && command -v nginx >/dev/null 2>&1; then
-            # Читаем файлы напрямую через *, чтобы обойти игнорирование symlink-ов
-            NGINX_CONF=$(grep -l "127.0.0.1:8000" /etc/nginx/sites-enabled/* 2>/dev/null | head -n 1 || true)
-            if [[ -n "$NGINX_CONF" && -f "$NGINX_CONF" ]]; then
-                P_DOMAIN=$(awk '/server_name/ {print $2}' "$NGINX_CONF" 2>/dev/null | head -n 1 | tr -d '; \r\n')
-            fi
-        fi
-
-        echo ""
-        echo "=============================================="
-        echo "  ВЕБ-ПАНЕЛЬ"
-        echo "=============================================="
-        if [[ "$P_HOST" == "127.0.0.1" && -n "$P_DOMAIN" ]]; then
-            echo "  URL заглушка:         https://$P_DOMAIN"
-            echo "  URL веб панели:       https://$P_DOMAIN$P_BASE"
-            echo "  IP адрес веб панели : https://$RU_IP:8000 - не доступно - включен домен"
-        else
-            echo "  URL:                  https://$RU_IP:8000"
-        fi
-        echo "  Логин:                $PANEL_USER"
-        if [[ "$AUTH_CHOICE" == "2" ]]; then
-            echo "  Пароль:               (задан вами при установке)"
-        elif [[ "$AUTH_CHOICE" == "keep" ]]; then
-            echo "  Пароль:               (не изменён, см. /etc/amnezia-panel.conf)"
-        else
-            echo "  Пароль:               $PANEL_PASS"
-            echo ""
-            echo "  СОХРАНИТЕ ПАРОЛЬ! Больше он не будет показан."
-        fi
-        echo "=============================================="
-    else
-        err "Веб-панель не запустилась"
-        err "Проверьте: sudo journalctl -u amnezia-panel -n 30"
-    fi
-    
     rm -f /tmp/amnezia-panel.py /tmp/amnezia-panel.service
-fi
 
-# =====================================================================
-#  Сохранение текущего коммита
-# =====================================================================
-if [[ "$INSTALL_PANEL" =~ ^[yYдД] ]]; then
     echo "  ↓ Сохранение текущей версии репозитория"
-    LATEST_SHA=$(curl -s "https://api.github.com/repos/daff4ik/amneziawg-cascade/commits/main" | grep -oP '"sha":\s*"\K[^"]+' | head -1)
+    LATEST_SHA=$(curl -s "https://api.github.com/repos/daff4ik/amneziawg-cascade/commits/main" | grep -oP '"sha":\s*"\K[^"]+' | head -1 || true)
     if [[ -n "$LATEST_SHA" ]]; then
-        mkdir -p /var/lib/amnezia-panel
         echo "$LATEST_SHA" > /var/lib/amnezia-panel/installed_commit
-        ok "Версия сохранена: $LATEST_SHA"
-    else
-        warn "Не удалось получить SHA с GitHub"
     fi
 fi
 
+# =====================================================================
+#  Настройка Stealth-режима (Только в режиме --update)
+# =====================================================================
+if [[ $UPDATE_MODE -eq 1 && "${SETUP_STEALTH:-n}" =~ ^[yYдД] ]]; then
+    say "Настройка Stealth-режима (Сайт-заглушка)"
+    
+    if [[ ! -f "/var/www/stealth/index.html" ]]; then
+        warn "В папке /var/www/stealth нет ваших файлов (index.html)!"
+        echo "Создаю пустую базовую страницу. Замените её на свой сайт позже!"
+        mkdir -p /var/www/stealth
+        cat > /var/www/stealth/index.html <<EOF
+<!DOCTYPE html><html><head><title>Under Construction</title></head>
+<body style="text-align:center; padding: 50px; font-family: sans-serif;">
+<h1>Site is under construction</h1><p>Please check back later.</p>
+</body></html>
+EOF
+    fi
+
+    read -p "Введите ваш домен (например, mysite.com): " DOMAIN
+    [[ -z "$DOMAIN" ]] && { err "Домен обязателен"; exit 1; }
+
+    read -p "Секретный путь для панели (например, 'myadmin'): " SECRET_PATH
+    [[ -z "$SECRET_PATH" ]] && { err "Путь обязателен"; exit 1; }
+
+    apt install -y -qq nginx certbot python3-certbot-nginx
+
+    cat > /etc/nginx/sites-available/amnezia-stealth <<EOF
+server {
+    listen 80;
+    server_name $DOMAIN;
+
+    root /var/www/stealth;
+    index index.html index.htm;
+
+    location / {
+        try_files \$uri \$uri/ =404;
+    }
+
+    location /$SECRET_PATH/ {
+        proxy_pass http://127.0.0.1:8000/;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+EOF
+    ln -sf /etc/nginx/sites-available/amnezia-stealth /etc/nginx/sites-enabled/
+    rm -f /etc/nginx/sites-enabled/default
+    systemctl restart nginx
+
+    echo "Получение SSL сертификата для $DOMAIN..."
+    if certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos -m "admin@$DOMAIN" --redirect; then
+        ok "SSL сертификат получен успешно!"
+    else
+        warn "Не удалось получить SSL. Убедитесь, что DNS обновились."
+        warn "Сайт и панель пока будут доступны по HTTP (порт 80)."
+    fi
+
+    # Прячем панель на локалхост
+    if [[ -f /etc/amnezia-panel.conf ]]; then
+        sed -i '/^host=/d' /etc/amnezia-panel.conf
+        sed -i '/^base_url=/d' /etc/amnezia-panel.conf
+        echo "host=127.0.0.1" >> /etc/amnezia-panel.conf
+        echo "base_url=/$SECRET_PATH" >> /etc/amnezia-panel.conf
+        systemctl restart amnezia-panel
+    fi
+fi
+
+# =====================================================================
+#  Итоговый вывод
+# =====================================================================
 say "ГОТОВО"
 if [[ $UPDATE_MODE -eq 1 ]]; then
     echo "Режим обновления завершён."
     echo "Конфиги awg0/awg1 и клиенты не изменены."
-    echo ""
-    echo "Обновлены: helper-скрипты, cron, панель (если выбрано)."
 else
     cat <<EOM
 
@@ -701,25 +720,6 @@ else
   Туннель awg0:    порт $AWG_TUNNEL_PORT/udp
   Клиенты awg1:    порт $AWG_CLIENT_PORT/udp
   Подсеть:         $CLIENT_SUBNET.0/24
-
-=== КОМАНДЫ УПРАВЛЕНИЯ КЛИЕНТАМИ ===
-
-  Добавить клиента:    sudo amnezia-add-client.sh <имя>
-  Удалить клиента:     sudo amnezia-remove-client.sh <имя>
-  Список клиентов:     sudo amnezia-list-clients.sh
-  Настроить Telegram:  sudo amnezia-notify-setup.sh
-
-Конфиги клиентов:      /root/clients/<имя>.conf
-vpn:// ссылки:         /root/clients/<имя>.vpn.txt
-
-=== ДИАГНОСТИКА ===
-
-  Статус туннеля:      sudo awg show
-  Проверить связь:     ping -c 3 $TUNNEL_B_IP
-  Healthcheck вручную: sudo amnezia-healthcheck.sh
-  Собрать трафик:      sudo amnezia-traffic-collector.py
-  БД трафика:          /var/lib/amnezia-panel/traffic.db
-
 EOM
 fi
 
@@ -728,7 +728,6 @@ if [[ "$INSTALL_PANEL" =~ ^[yYдД] ]]; then
     P_CONF="/etc/amnezia-panel.conf"
     P_HOST=$(awk -F'=' '/^host/ {print $2}' "$P_CONF" 2>/dev/null | tr -d ' \r\n')
     [[ -z "$P_HOST" ]] && P_HOST="0.0.0.0"
-    
     P_BASE=$(awk -F'=' '/^base_url/ {print $2}' "$P_CONF" 2>/dev/null | tr -d ' \r\n')
     
     P_DOMAIN=""
@@ -745,33 +744,30 @@ if [[ "$INSTALL_PANEL" =~ ^[yYдД] ]]; then
         echo "URL веб панели:       https://$P_DOMAIN$P_BASE"
         echo "IP адрес веб панели : https://$RU_IP:8000 - не доступно - включен домен"
     else
-        echo "Веб-панель:          https://$RU_IP:8000"
+        echo "Веб-панель:           https://$RU_IP:8000"
     fi
-    echo "Учётные данные:      /etc/amnezia-panel.conf"
+    echo "Учётные данные:       /etc/amnezia-panel.conf"
+    if [[ -n "${PANEL_PASS:-}" ]]; then
+        echo "Логин:                $PANEL_USER"
+        echo "Пароль:               $PANEL_PASS"
+        echo "(СОХРАНИТЕ ПАРОЛЬ! Больше он показан не будет)"
+    fi
     echo "=============================================="
-    echo ""
-    
-    # Предложение установить Stealth-режим только при первой установке
+
+    # --- ИНСТРУКЦИЯ ПО STEALTH ТОЛЬКО ДЛЯ ПЕРВОЙ УСТАНОВКИ ---
     if [[ $UPDATE_MODE -eq 0 ]]; then
-        say "Stealth-режим (Опционально)"
-        echo "Для защиты от сканирования вы можете скрыть веб-панель за сайтом-заглушкой."
-        echo "ВНИМАНИЕ: У вас должен быть домен, привязанный к IP этого сервера."
-        echo "Бесплатный домен можно получить на https://freedns.afraid.org/"
         echo ""
-        read -p "Активировать Stealth-режим сейчас? (y/n) [n]: " ASK_STEALTH
-        if [[ "$ASK_STEALTH" =~ ^[yYдД] ]]; then
-            echo "Скачивание установщика заглушки..."
-            if curl -fsSL --connect-timeout 5 "$REPO_URL/stealth-setup.sh" -o /tmp/stealth-setup.sh || \
-               curl -fsSL --connect-timeout 5 "https://ghproxy.net/$REPO_URL/stealth-setup.sh" -o /tmp/stealth-setup.sh || \
-               curl -fsSL --connect-timeout 5 "https://mirror.ghproxy.com/$REPO_URL/stealth-setup.sh" -o /tmp/stealth-setup.sh; then
-                bash /tmp/stealth-setup.sh
-            else
-                err "Не удалось скачать stealth-setup.sh. Заглушку можно настроить позже вручную, следуя инструкции в README."
-            fi
-        else
-            echo "Stealth-режим пропущен. Панель доступна по IP адресу."
-            echo "Для последующей настройки обратитесь к README.md."
-        fi
+        say "Stealth-режим (Сайт-заглушка)"
+        echo "Для максимальной маскировки вы можете спрятать панель за собственным сайтом-заглушкой."
+        echo ""
+        echo "ИНСТРУКЦИЯ ПО НАСТРОЙКЕ:"
+        echo "1. Получите домен (например, на https://freedns.afraid.org/) и направьте его на IP: $RU_IP"
+        echo "2. Подготовьте файлы вашего фейкового сайта (index.html, картинки и т.д.)."
+        echo "3. Загрузите эти файлы на сервер в папку: /var/www/stealth"
+        echo "4. Запустите скрипт обновления с флагом --update:"
+        echo "   sudo bash -c \"\$(curl -fsSL $REPO_URL/deploy.sh)\" -- --update"
+        echo "5. При обновлении ответьте 'y' на вопрос о настройке Stealth-режима."
+        echo "=============================================="
     fi
 fi
 
