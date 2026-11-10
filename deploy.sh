@@ -697,8 +697,10 @@ EOF
     if [[ -f /etc/amnezia-panel.conf ]]; then
         sed -i '/^host=/d' /etc/amnezia-panel.conf
         sed -i '/^base_url=/d' /etc/amnezia-panel.conf
+        sed -i '/^ssl=/d' /etc/amnezia-panel.conf
         echo "host=127.0.0.1" >> /etc/amnezia-panel.conf
         echo "base_url=/$SECRET_PATH" >> /etc/amnezia-panel.conf
+        echo "ssl=false" >> /etc/amnezia-panel.conf
         systemctl restart amnezia-panel
     fi
 fi
