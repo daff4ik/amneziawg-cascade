@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """AmneziaWG Web Panel — Optimized, Mobile-First, Secure"""
+import asyncio
 import os
 import re
 import hmac
@@ -35,6 +36,38 @@ REPO_API_URL      = "https://api.github.com/repos/daff4ik/amneziawg-cascade/comm
 SESSION_COOKIE = "amnezia_session"
 SESSION_DAYS   = 7
 
+CASCADE_ENV = "/etc/amnezia-cascade.env"
+AUTH_LOG    = "/var/log/amnezia-panel-auth.log"
+
+# ================ Общие константы каскада (пишет deploy.sh) ================
+def load_cascade_env():
+    env = {
+        "AWG_TUNNEL_PORT": "8443",
+        "TUNNEL_A_IP": "10.10.10.2",
+        "TUNNEL_B_IP": "10.10.10.1",
+        "TUNNEL_A_IP6": "fd00:10:10:10::2",
+        "TUNNEL_B_IP6": "fd00:10:10:10::1",
+        "CLIENT_SUBNET": "10.8.0",
+        "CLIENT_SUBNET6": "fd00:10:8",
+        "MTU_AWG0": "1180",
+        "MSS_CLAMP": "1000",
+        "IPV6_ENABLED": "0",
+    }
+    if os.path.exists(CASCADE_ENV):
+        try:
+            with open(CASCADE_ENV, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        env[k.strip()] = v.strip().strip('"').strip("'")
+        except Exception:
+            pass
+    return env
+
+CAS = load_cascade_env()
+IPV6_ENABLED = CAS["IPV6_ENABLED"] == "1"
+
 # ================ Конфигурация запуска ================
 def get_config_val(key, default):
     if not os.path.exists(CONFIG_FILE): return default
@@ -50,6 +83,8 @@ USE_SSL = get_config_val("ssl", "true").lower() == "true"
 
 # ================ Auth ================
 def load_credentials():
+    """Возвращает (username, password_plain, password_hash).
+    password_hash имеет формат sha256:salt:hexdigest (приоритет над plaintext)."""
     if not os.path.exists(CONFIG_FILE):
         raise RuntimeError("no config")
     cfg = {}
@@ -60,21 +95,72 @@ def load_credentials():
                 continue
             k, v = line.split("=", 1)
             cfg[k.strip()] = v.strip()
-    return cfg.get("username", "admin"), cfg.get("password", "admin")
+    return cfg.get("username", "admin"), cfg.get("password", ""), cfg.get("password_hash", "")
 
-def make_token(p: str) -> str:
-    return hmac.new(p.encode(), b"amnezia-panel-session", hashlib.sha256).hexdigest()
+def verify_password(p: str, password_plain: str, password_hash: str) -> bool:
+    if password_hash:
+        try:
+            algo, salt, hexd = password_hash.split(":", 2)
+        except ValueError:
+            return False
+        if algo != "sha256":
+            return False
+        digest = hashlib.sha256((salt + p).encode()).hexdigest()
+        return hmac.compare_digest(digest, hexd)
+    return hmac.compare_digest(p, password_plain)
+
+def make_token(secret: str, ts: int) -> str:
+    sig = hmac.new(secret.encode(), f"panel-session:{ts}".encode(), hashlib.sha256).hexdigest()
+    return f"{ts}.{sig}"
+
+def check_token(token: str, secret: str) -> bool:
+    try:
+        ts_str, sig = token.split(".", 1)
+        ts = int(ts_str)
+    except (ValueError, AttributeError):
+        return False
+    if not 0 <= time.time() - ts <= SESSION_DAYS * 86400:
+        return False
+    expected = hmac.new(secret.encode(), f"panel-session:{ts}".encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(sig, expected)
+
+# --- Антибрутфорс формы логина (in-memory + лог для fail2ban) ---
+LOGIN_MAX_FAILS   = 5
+LOGIN_BAN_SECONDS = 600
+_login_fails = {}  # ip -> (count, first_ts, banned_until)
+
+def _login_blocked(ip: str) -> bool:
+    rec = _login_fails.get(ip)
+    return bool(rec and rec[2] and time.time() < rec[2])
+
+def _register_login_fail(ip: str, username: str):
+    now = time.time()
+    cnt, first, _ = _login_fails.get(ip, (0, now, 0))
+    if now - first > LOGIN_BAN_SECONDS:
+        cnt, first = 0, now
+    cnt += 1
+    banned_until = now + LOGIN_BAN_SECONDS if cnt >= LOGIN_MAX_FAILS else 0
+    _login_fails[ip] = (cnt, first, banned_until)
+    try:
+        with open(AUTH_LOG, "a", encoding="utf-8") as f:
+            f.write(f"{datetime.datetime.now():%Y-%m-%d %H:%M:%S} "
+                    f"Failed login attempt from {ip} (user={username})\n")
+    except Exception:
+        pass
+
+def _clear_login_fails(ip: str):
+    _login_fails.pop(ip, None)
 
 class RedirectToLogin(Exception):
     pass
 
 def current_user(request: Request) -> str:
     try:
-        u, p = load_credentials()
+        u, p, ph = load_credentials()
     except RuntimeError:
         raise HTTPException(500, "config error")
     t = request.cookies.get(SESSION_COOKIE, "")
-    if not hmac.compare_digest(t, make_token(p)):
+    if not check_token(t, ph or p):
         if request.url.path.startswith("/api/") or request.url.path.startswith("/download/"):
             raise HTTPException(401, "Unauthorized")
         raise RedirectToLogin()
@@ -171,14 +257,29 @@ def ssh_upload(ip, port, user, password, local_path, remote_path, timeout=120):
     except Exception as e:
         return False, "", str(e)
 
+INSTALL_SCRIPT = "/usr/local/bin/amnezia-server-install.sh"
+
 def install_awg_remote(ip, port, user, password):
+    """Базовая установка AmneziaWG на новый выходной сервер.
+    Используется общий скрипт amnezia-server-install.sh (тот же, что в deploy.sh)."""
+    flags = ["--fail2ban"]
+    if IPV6_ENABLED:
+        flags.append("--ipv6")
+
+    if os.path.exists(INSTALL_SCRIPT):
+        ok, _, err = ssh_upload(ip, port, user, password, INSTALL_SCRIPT, "/tmp/_awg_install.sh")
+        if not ok: return False, "", err
+        ok, out, err = ssh_exec(ip, port, user, password,
+                                "bash /tmp/_awg_install.sh " + " ".join(flags), timeout=300)
+        ssh_exec(ip, port, user, password, "rm -f /tmp/_awg_install.sh", timeout=10)
+        return ok, out, err
+
+    # Fallback: встроенный минимальный скрипт (если helper не установлен)
     script = '''#!/bin/bash
 export DEBIAN_FRONTEND=noninteractive
-systemctl stop unattended-upgrades apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
-systemctl disable unattended-upgrades apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
 apt update -qq
 apt install -y -qq software-properties-common python3-launchpadlib gnupg2 \\
-    linux-headers-$(uname -r) build-essential dkms iptables qrencode
+    linux-headers-$(uname -r) build-essential dkms iptables qrencode sqlite3 fail2ban
 if ! command -v awg >/dev/null; then
     add-apt-repository -y ppa:amnezia/ppa
     apt update -qq
@@ -186,8 +287,10 @@ if ! command -v awg >/dev/null; then
 fi
 modprobe amneziawg || true
 echo "amneziawg" > /etc/modules-load.d/amneziawg.conf
-echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-amneziawg.conf
+printf 'net.ipv4.ip_forward=1\\nnet.ipv6.conf.all.forwarding=1\\n' > /etc/sysctl.d/99-amneziawg.conf
 sysctl --system >/dev/null 2>&1 || true
+systemctl enable fail2ban 2>/dev/null || true
+systemctl restart fail2ban 2>/dev/null || true
 echo INSTALLED_OK
 '''
     lp = "/tmp/_install_awg.sh"
@@ -218,25 +321,43 @@ def build_de_conf(ru_conf_path, de_privkey, ru_pubkey, de_iface):
         v = get(p)
         if v: params[p] = v
     params_str = "\n".join(f"{k} = {v}" for k, v in params.items())
+    mss = CAS["MSS_CLAMP"]
+    v6_addr = f"Address = {CAS['TUNNEL_B_IP6']}/128\n" if IPV6_ENABLED else ""
+    v6_postup = ""
+    v6_postdown = ""
+    v6_allowed = ""
+    if IPV6_ENABLED:
+        v6_postup = f"""PostUp = ip6tables -A FORWARD -i awg0 -j ACCEPT
+PostUp = ip6tables -A FORWARD -o awg0 -j ACCEPT
+PostUp = ip6tables -t nat -A POSTROUTING -o {de_iface} -j MASQUERADE
+PostUp = while ip6tables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss {mss} 2>/dev/null; do :; done
+PostUp = ip6tables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss {mss}
+"""
+        v6_postdown = f"""PostDown = ip6tables -D FORWARD -i awg0 -j ACCEPT
+PostDown = ip6tables -D FORWARD -o awg0 -j ACCEPT
+PostDown = ip6tables -t nat -D POSTROUTING -o {de_iface} -j MASQUERADE
+PostDown = ip6tables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss {mss} 2>/dev/null || true
+"""
+        v6_allowed = f", {CAS['TUNNEL_A_IP6']}/128"
     return f"""[Interface]
 PrivateKey = {de_privkey}
-Address = 10.10.10.1/32
-ListenPort = 8443
-MTU = 1180
+Address = {CAS['TUNNEL_B_IP']}/32
+{v6_addr}ListenPort = {CAS['AWG_TUNNEL_PORT']}
+MTU = {CAS['MTU_AWG0']}
 {params_str}
 PostUp = iptables -A FORWARD -i awg0 -j ACCEPT
 PostUp = iptables -A FORWARD -o awg0 -j ACCEPT
 PostUp = iptables -t nat -A POSTROUTING -o {de_iface} -j MASQUERADE
-PostUp = while iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1000 2>/dev/null; do :; done
-PostUp = iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1000
-PostDown = iptables -D FORWARD -i awg0 -j ACCEPT
+PostUp = while iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss {mss} 2>/dev/null; do :; done
+PostUp = iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss {mss}
+{v6_postup}PostDown = iptables -D FORWARD -i awg0 -j ACCEPT
 PostDown = iptables -D FORWARD -o awg0 -j ACCEPT
 PostDown = iptables -t nat -D POSTROUTING -o {de_iface} -j MASQUERADE
-PostDown = iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1000 2>/dev/null || true
-
+PostDown = iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss {mss} 2>/dev/null || true
+{v6_postdown}
 [Peer]
 PublicKey = {ru_pubkey}
-AllowedIPs = 10.10.10.2/32
+AllowedIPs = {CAS['TUNNEL_A_IP']}/32{v6_allowed}
 """
 
 def update_ru_peer(conf_text, de_pub, de_ip):
@@ -256,7 +377,7 @@ def update_ru_peer(conf_text, de_pub, de_ip):
                 out.append(f"PublicKey = {de_pub}")
                 continue
             if stripped.startswith("Endpoint"):
-                out.append(f"Endpoint = {de_ip}:8443")
+                out.append(f"Endpoint = {de_ip}:{CAS['AWG_TUNNEL_PORT']}")
                 continue
         out.append(line)
     return "\n".join(out)
@@ -268,6 +389,13 @@ def do_switch_server(server, password):
     ok, out, err = ssh_exec(ip, port, user, password, "echo SSH_OK")
     if not ok or "SSH_OK" not in (out or ""):
         return False, f"SSH до {ip} не работает: {err or out}"
+
+    if IPV6_ENABLED:
+        ok, out, _ = ssh_exec(ip, port, user, password,
+                              "ip -6 route show default 2>/dev/null | grep -q '^default' && echo V6_OK")
+        if not ok or "V6_OK" not in (out or ""):
+            return False, (f"На сервере {ip} нет выхода в IPv6, а в текущей конфигурации "
+                           f"туннеля IPv6 включён. Выберите сервер с поддержкой IPv6.")
 
     ok, out, err = install_awg_remote(ip, port, user, password)
     if not ok or "INSTALLED_OK" not in (out or ""):
@@ -334,9 +462,15 @@ def do_switch_server(server, password):
 
     for _ in range(6):
         time.sleep(3)
-        r = subprocess.run(["ping", "-c", "2", "-W", "2", "10.10.10.1"],
+        r = subprocess.run(["ping", "-c", "2", "-W", "2", CAS["TUNNEL_B_IP"]],
                            capture_output=True, text=True)
-        if r.returncode == 0 and " 0% packet loss" in r.stdout:
+        v4_ok = r.returncode == 0 and " 0% packet loss" in r.stdout
+        v6_ok = True
+        if IPV6_ENABLED:
+            r6 = subprocess.run(["ping", "-6", "-c", "2", "-W", "2", CAS["TUNNEL_B_IP6"]],
+                                capture_output=True, text=True)
+            v6_ok = r6.returncode == 0
+        if v4_ok and v6_ok:
             data = load_servers()
             data["active_id"] = server["id"]
             save_servers(data)
@@ -361,27 +495,24 @@ def parse_clients():
     return out
 
 def get_live_status():
+    """Статус пиров по unix-timestamp последнего handshake (надёжнее текстового разбора)."""
+    stats = {}
     try:
-        r = subprocess.run(["awg", "show", AWG_IFACE], capture_output=True, text=True, timeout=5)
-        stats = {}
-        cur = None
-        for line in r.stdout.splitlines():
-            s = line.strip()
-            m = re.match(r"^peer:\s*(\S+)", s)
-            if m:
-                cur = m.group(1)
-                stats[cur] = "OFFLINE"
+        r = subprocess.run(["awg", "show", AWG_IFACE, "dump"],
+                           capture_output=True, text=True, timeout=5)
+        now = time.time()
+        for line in r.stdout.strip().split("\n")[1:]:
+            parts = line.split("\t")
+            if len(parts) < 7:
                 continue
-            if cur and "latest handshake:" in s:
-                if "second" in s or ("minute" in s and "minutes" not in s):
-                    stats[cur] = "ONLINE"
-                elif "minutes" in s:
-                    try:
-                        mins = int(re.search(r"(\d+)\s+minutes", s).group(1))
-                        if mins < 3: stats[cur] = "ONLINE"
-                    except: pass
-        return stats
-    except: return {}
+            try:
+                hs = int(parts[4])
+            except ValueError:
+                hs = 0
+            stats[parts[0]] = "ONLINE" if hs and now - hs <= 180 else "OFFLINE"
+    except Exception:
+        pass
+    return stats
 
 def fmt_handshake(ts):
     if ts == 0: return "никогда"
@@ -1059,25 +1190,32 @@ async def _rtl(request: Request, exc: RedirectToLogin):
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request, error: str = ""):
     try:
-        _, p = load_credentials()
-        if hmac.compare_digest(request.cookies.get(SESSION_COOKIE, ""), make_token(p)):
+        _, p, ph = load_credentials()
+        if check_token(request.cookies.get(SESSION_COOKIE, ""), ph or p):
             return RedirectResponse(f"{BASE_URL}/", status_code=303)
     except RuntimeError:
         pass
     return render_login(error)
 
 @app.post("/login")
-async def login_submit(username: str = Form(...), password: str = Form(...)):
+async def login_submit(request: Request, username: str = Form(...), password: str = Form(...)):
+    ip = request.headers.get("x-real-ip") or (request.client.host if request.client else "unknown")
+    if _login_blocked(ip):
+        return RedirectResponse(
+            f"{BASE_URL}/login?error=Слишком+много+попыток.+Подождите+10+минут", status_code=303)
     try:
-        u, p = load_credentials()
+        u, p, ph = load_credentials()
     except RuntimeError:
         return RedirectResponse(f"{BASE_URL}/login?error=Config+Error", status_code=303)
-    
-    if not (hmac.compare_digest(username, u) and hmac.compare_digest(password, p)):
+
+    if not (hmac.compare_digest(username, u) and verify_password(password, p, ph)):
+        _register_login_fail(ip, username)
+        await asyncio.sleep(1)
         return RedirectResponse(f"{BASE_URL}/login?error=Неверный+логин+или+пароль", status_code=303)
-    
+
+    _clear_login_fails(ip)
     r = RedirectResponse(f"{BASE_URL}/", status_code=303)
-    r.set_cookie(SESSION_COOKIE, make_token(p), max_age=SESSION_DAYS*86400,
+    r.set_cookie(SESSION_COOKIE, make_token(ph or p, int(time.time())), max_age=SESSION_DAYS*86400,
                  httponly=True, secure=True, samesite="lax", path="/")
     return r
 
@@ -1103,10 +1241,18 @@ async def index(request: Request, message: str = "", error: str = ""):
     current_user(request)
     return render_page([], message, error)
 
+_clients_cache = {"ts": 0.0, "data": []}
+CLIENTS_CACHE_TTL = 3.0
+
 @app.get("/api/clients")
 async def api_clients(request: Request):
     current_user(request)
-    return JSONResponse(enrich(parse_clients()))
+    now = time.time()
+    if now - _clients_cache["ts"] < CLIENTS_CACHE_TTL:
+        return JSONResponse(_clients_cache["data"])
+    data = await run_in_threadpool(lambda: enrich(parse_clients()))
+    _clients_cache.update(ts=now, data=data)
+    return JSONResponse(data)
 
 # --- API Локальной Сети (LAN) ---
 @app.get("/api/lan/status")
@@ -1120,26 +1266,42 @@ async def api_lan_status(request: Request):
         pass
     return JSONResponse({"enabled": enabled})
 
+def _apply_lan_rules(enable: bool):
+    """Применяет LAN-правила на лету, без перезапуска awg1 (клиенты не отключаются)."""
+    subnet = f"{CAS['CLIENT_SUBNET']}.0/24"
+    rule = ["FORWARD", "-i", "awg1", "-o", "awg1", "-j", "ACCEPT"]
+    if enable:
+        if subprocess.run(["iptables", "-C"] + rule, capture_output=True).returncode != 0:
+            subprocess.run(["iptables", "-I"] + rule, capture_output=True)
+        subprocess.run(["ip", "route", "add", subnet, "dev", "awg1", "table", "100"],
+                       capture_output=True)
+    else:
+        while subprocess.run(["iptables", "-D"] + rule, capture_output=True).returncode == 0:
+            pass
+        subprocess.run(["ip", "route", "del", subnet, "dev", "awg1", "table", "100"],
+                       capture_output=True)
+
 @app.post("/api/lan/toggle")
 async def api_lan_toggle(request: Request):
     current_user(request)
     body = await request.json()
     enable = bool(body.get("enabled", False))
-    
+
+    subnet = f"{CAS['CLIENT_SUBNET']}.0/24"
     lan_rules = [
         "PostUp = iptables -I FORWARD -i awg1 -o awg1 -j ACCEPT\n",
-        "PostUp = ip route add 10.8.0.0/24 dev awg1 table 100 || true\n",
+        f"PostUp = ip route add {subnet} dev awg1 table 100 || true\n",
         "PostDown = iptables -D FORWARD -i awg1 -o awg1 -j ACCEPT\n",
-        "PostDown = ip route del 10.8.0.0/24 dev awg1 table 100 || true\n"
+        f"PostDown = ip route del {subnet} dev awg1 table 100 || true\n"
     ]
-    
+
     try:
         with open(AWG_CONF, "r", encoding="utf-8") as f:
             lines = f.readlines()
-        
+
         # Очищаем конфиг от этих правил на случай, если они уже есть
         clean_lines = [l for l in lines if l not in lan_rules]
-        
+
         if enable:
             # Вставляем правила перед секцией [Peer] или в конец блока Interface
             insert_idx = len(clean_lines)
@@ -1148,16 +1310,16 @@ async def api_lan_toggle(request: Request):
                     insert_idx = i
                     break
             clean_lines = clean_lines[:insert_idx] + lan_rules + clean_lines[insert_idx:]
-            
+
         with open(AWG_CONF, "w", encoding="utf-8") as f:
             f.writelines(clean_lines)
-            
-        # Мягкий рестарт клиентского интерфейса
-        subprocess.run(["systemctl", "restart", "awg-quick@awg1"], capture_output=True, check=True)
-        
+
+        # Правила применяются напрямую — перезапуск интерфейса не нужен
+        await run_in_threadpool(_apply_lan_rules, enable)
+
         state_str = "ВКЛЮЧЕНА" if enable else "ВЫКЛЮЧЕНА"
         _notify(f"🌐 <b>Локальная сеть (LAN)</b>\nСвязь между клиентами {state_str}")
-        
+
         return JSONResponse({"ok": True})
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
@@ -1239,6 +1401,7 @@ async def create_client(request: Request, name: str = Form(...)):
     if not n: return RedirectResponse(f"{BASE_URL}/?error=Недопустимое+имя+клиента", status_code=303)
     try:
         subprocess.run([ADD_SCRIPT, n], input="y\n", capture_output=True, text=True, timeout=90, check=True)
+        _clients_cache["ts"] = 0.0
         _notify(f"👤 <b>Новый клиент</b> (через панель)\nИмя: <code>{n}</code>")
         return RedirectResponse(f"{BASE_URL}/?message=Клиент+{n}+создан", status_code=303)
     except subprocess.CalledProcessError as e:
@@ -1253,6 +1416,7 @@ async def delete_client(request: Request, name: str):
     n = re.sub(r"[^a-zA-Z0-9_-]", "", name)
     try:
         subprocess.run([REMOVE_SCRIPT, n], input="y\n", capture_output=True, text=True, timeout=60, check=True)
+        _clients_cache["ts"] = 0.0
         _notify(f"🗑️ <b>Клиент удалён</b> (через панель)\nИмя: <code>{n}</code>")
         return RedirectResponse(f"{BASE_URL}/?message=Клиент+{n}+удалён", status_code=303)
     except subprocess.CalledProcessError as e:

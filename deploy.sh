@@ -39,11 +39,45 @@ MSS_CLAMP="1000"
 CLIENT_MTU="1280"
 CLIENT_DNS="1.1.1.1, 1.0.0.1"
 
+# IPv6 (ULA-адресация внутри туннеля, в интернет — NAT66 на SERVER-B)
+TUNNEL_A_IP6="fd00:10:10:10::2"
+TUNNEL_B_IP6="fd00:10:10:10::1"
+CLIENT_SUBNET6="fd00:10:8"
+CLIENT_DNS6="2606:4700:4700::1111, 2606:4700:4700::1001"
+IPV6_ENABLED=0
+
+CASCADE_ENV="/etc/amnezia-cascade.env"
+
 # ==================== Хелперы ====================
 say()  { echo -e "\n\033[1;36m=== $* ===\033[0m"; }
 ok()   { echo -e "\033[1;32m[OK]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[WARN]\033[0m $*"; }
 err()  { echo -e "\033[1;31m[ERR]\033[0m $*" >&2; }
+sed_escape() { printf '%s' "$1" | sed -e 's/[\/&|]/\\&/g'; }
+
+write_cascade_env() {
+    cat > "$CASCADE_ENV" <<EOF
+# AmneziaWG Cascade — общие константы.
+# Пишет deploy.sh, читают helper-скрипты и веб-панель.
+AWG_TUNNEL_PORT="$AWG_TUNNEL_PORT"
+AWG_CLIENT_PORT="$AWG_CLIENT_PORT"
+TUNNEL_A_IP="$TUNNEL_A_IP"
+TUNNEL_B_IP="$TUNNEL_B_IP"
+CLIENT_SUBNET="$CLIENT_SUBNET"
+CLIENT_SERVER_IP="$CLIENT_SERVER_IP"
+MTU_AWG0="$MTU_AWG0"
+MTU_AWG1="$MTU_AWG1"
+MSS_CLAMP="$MSS_CLAMP"
+CLIENT_MTU="$CLIENT_MTU"
+CLIENT_DNS="$CLIENT_DNS"
+IPV6_ENABLED="$IPV6_ENABLED"
+TUNNEL_A_IP6="$TUNNEL_A_IP6"
+TUNNEL_B_IP6="$TUNNEL_B_IP6"
+CLIENT_SUBNET6="$CLIENT_SUBNET6"
+CLIENT_DNS6="$CLIENT_DNS6"
+EOF
+    chmod 600 "$CASCADE_ENV"
+}
 
 # =====================================================================
 #  Интерактивный ввод
@@ -56,16 +90,18 @@ if [[ $UPDATE_MODE -eq 1 ]]; then
         exit 1
     fi
     say "Режим обновления: SERVER-B не затрагивается"
-    
+
     RU_IP=$(hostname -I | awk '{print $1}')
     [[ -z "$RU_IP" ]] && { err "Не удалось определить IP этого сервера"; exit 1; }
+
+    # Подхватываем константы существующей установки
+    [[ -f "$CASCADE_ENV" ]] && source "$CASCADE_ENV"
 
     OLD_SERVER_NAME=""
     if [[ -f /usr/local/bin/amnezia-add-client.sh ]]; then
         OLD_SERVER_NAME=$(grep -oP '^SERVER_NAME="\K[^"]+' /usr/local/bin/amnezia-add-client.sh | head -1 || echo "")
     fi
-    
-    if [[ -z "$OLD_SERVER_NAME" || "$OLD_SERVER_NAME" == "__SERVER_NAME__" ]] && [[ -f /opt/amnezia-panel.py ]]; then
+    if [[ ( -z "$OLD_SERVER_NAME" || "$OLD_SERVER_NAME" == "__SERVER_NAME__" ) && -f /opt/amnezia-panel.py ]]; then
         OLD_SERVER_NAME=$(grep -oP 'SERVER_LABEL\s*=\s*"\K[^"]+' /opt/amnezia-panel.py | head -1 || echo "")
     fi
 
@@ -79,18 +115,16 @@ if [[ $UPDATE_MODE -eq 1 ]]; then
             read -p "Введите новое имя сервера: " SERVER_NAME
         fi
     else
-        read -p "Название сервера для AmneziaVPN (например, 'LALLUZA'): " SERVER_NAME
+        read -p "Название сервера для AmneziaVPN (например, 'MyVPN'): " SERVER_NAME
     fi
-    
     SERVER_NAME="${SERVER_NAME:-AmneziaVPN}"
 
     if [[ -f /etc/amnezia-panel.conf ]]; then
         read -p "Веб-панель уже установлена. Обновить её? (y/n) [y]: " INSTALL_PANEL
-        INSTALL_PANEL="${INSTALL_PANEL:-y}"
     else
         read -p "Установить веб-панель? (y/n) [y]: " INSTALL_PANEL
-        INSTALL_PANEL="${INSTALL_PANEL:-y}"
     fi
+    INSTALL_PANEL="${INSTALL_PANEL:-y}"
 
     read -p "Настроить/перенастроить Stealth-режим (Nginx-заглушка)? (y/n) [n]: " SETUP_STEALTH
     SETUP_STEALTH="${SETUP_STEALTH:-n}"
@@ -122,7 +156,7 @@ else
     read -p "Установить веб-панель? (y/n) [n]: " INSTALL_PANEL
     INSTALL_PANEL="${INSTALL_PANEL:-n}"
 
-    read -p "Установить Fail2Ban (защита сервера от брутфорса)? (y/n) [y]: " INSTALL_F2B
+    read -p "Установить Fail2Ban на оба сервера (защита от брутфорса)? (y/n) [y]: " INSTALL_F2B
     INSTALL_F2B="${INSTALL_F2B:-y}"
 fi
 
@@ -156,88 +190,56 @@ SCRIPTS_TO_DOWNLOAD=(
     amnezia-healthcheck.sh
     amnezia-traffic-collector.py
     amnezia-panel-access.sh
+    amnezia-server-install.sh
 )
 
 MIRRORS=(
     "https://raw.githubusercontent.com/daff4ik/amneziawg-cascade/main"
     "https://ghproxy.net/https://raw.githubusercontent.com/daff4ik/amneziawg-cascade/main"
     "https://mirror.ghproxy.com/https://raw.githubusercontent.com/daff4ik/amneziawg-cascade/main"
-    "https://raw.fastgit.org/daff4ik/amneziawg-cascade/main"
 )
 
-download_file() {
-    local filename=$1
-    local dest_path=$2
-    local success=0
-    
-    echo "  ↓ $filename"
-    for mirror in "${MIRRORS[@]}"; do
-        local url="$mirror/scripts/$filename"
-        if curl -fsSL --connect-timeout 5 --max-time 15 "$url" -o "$dest_path"; then
+# Запоминаем первое рабочее зеркало, чтобы не перебирать все для каждого файла
+WORKING_MIRROR=""
+
+download_url() {
+    # download_url <url-путь-относительно-репо> <куда>
+    local rel=$1 dest_path=$2 success=0
+    local mirrors=()
+    [[ -n "$WORKING_MIRROR" ]] && mirrors+=("$WORKING_MIRROR")
+    for m in "${MIRRORS[@]}"; do
+        [[ "$m" != "$WORKING_MIRROR" ]] && mirrors+=("$m")
+    done
+    echo "  ↓ $(basename "$rel")"
+    for mirror in "${mirrors[@]}"; do
+        if curl -fsSL --connect-timeout 5 --max-time 15 "$mirror/$rel" -o "$dest_path"; then
+            WORKING_MIRROR="$mirror"
             success=1
             break
         fi
     done
-    
     if [[ $success -eq 0 ]]; then
-        warn "Не удалось скачать $filename ни с одного зеркала — пропускаю"
+        warn "Не удалось скачать $rel ни с одного зеркала — пропускаю"
         rm -f "$dest_path"
     fi
 }
 
 for f in "${SCRIPTS_TO_DOWNLOAD[@]}"; do
-    download_file "$f" "/tmp/$f"
+    download_url "scripts/$f" "/tmp/$f"
     [[ -f "/tmp/$f" ]] && chmod +x "/tmp/$f"
 done
+[[ -f /tmp/amnezia-server-install.sh ]] || { err "Не скачан amnezia-server-install.sh — без него установка невозможна"; exit 1; }
 ok "Скрипты скачаны"
 
-# =====================================================================
-#  Установка AmneziaWG локально (всегда)
-# =====================================================================
-say "Установка AmneziaWG на SERVER-A"
-export DEBIAN_FRONTEND=noninteractive
-systemctl stop unattended-upgrades apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
-systemctl disable unattended-upgrades apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
-apt update -qq
-apt install -y -qq software-properties-common python3-launchpadlib gnupg2 \
-    linux-headers-$(uname -r) build-essential dkms iptables qrencode sqlite3
-if ! command -v awg >/dev/null; then
-    add-apt-repository -y ppa:amnezia/ppa
-    apt update -qq
-    apt install -y -qq amneziawg
-fi
-modprobe amneziawg || true
-echo "amneziawg" > /etc/modules-load.d/amneziawg.conf
-echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-amneziawg.conf
-sysctl --system >/dev/null 2>&1 || true
-ok "AmneziaWG на SERVER-A готов"
+# Флаги для amnezia-server-install.sh
+INSTALL_FLAGS=()
+[[ "$INSTALL_F2B" =~ ^[yYдД] ]] && INSTALL_FLAGS+=(--fail2ban)
 
 # =====================================================================
-#  Fail2Ban (Защита от брутфорса)
-# =====================================================================
-if [[ "$INSTALL_F2B" =~ ^[yYдД] ]]; then
-    say "Настройка Fail2Ban (Защита SSH)"
-    apt install -y -qq fail2ban
-    cat > /etc/fail2ban/jail.local <<EOF
-[sshd]
-enabled = true
-port = ssh
-filter = sshd
-logpath = /var/log/auth.log
-maxretry = 5
-bantime = 3600
-findtime = 600
-EOF
-    systemctl enable fail2ban
-    systemctl restart fail2ban
-    ok "Fail2Ban активирован"
-fi
-
-# =====================================================================
-#  Настройка туннеля (ТОЛЬКО при полной установке)
+#  Полная установка: SSH до SERVER-B, IPv6, туннели
 # =====================================================================
 if [[ $UPDATE_MODE -eq 0 ]]; then
-    say "Установка sshpass и проверка SSH"
+    say "Установка sshpass и проверка SSH до SERVER-B"
     command -v sshpass >/dev/null || { apt update -qq && apt install -y -qq sshpass; }
     export SSHPASS="$DE_PASS"
 
@@ -254,25 +256,28 @@ if [[ $UPDATE_MODE -eq 0 ]]; then
     run_de "echo SSH_OK" | grep -q SSH_OK || { err "SSH до $DE_IP не работает"; exit 1; }
     ok "SSH работает"
 
+    # --- Определение доступности IPv6 на SERVER-B ---
+    say "Проверка IPv6 на SERVER-B"
+    if run_de "ip -6 route show default 2>/dev/null | grep -q '^default'"; then
+        read -p "На SERVER-B есть выход в IPv6. Включить IPv6 в туннеле? (y/n) [y]: " V6_ANS
+        V6_ANS="${V6_ANS:-y}"
+        [[ "$V6_ANS" =~ ^[yYдД] ]] && IPV6_ENABLED=1
+    else
+        echo "IPv6 на SERVER-B не обнаружен — туннель будет только IPv4."
+    fi
+    [[ $IPV6_ENABLED -eq 1 ]] && INSTALL_FLAGS+=(--ipv6) && ok "IPv6 включён"
+
+    # --- Общий файл констант для скриптов и панели ---
+    write_cascade_env
+
+    # --- Установка AmneziaWG на оба сервера (единый скрипт) ---
+    say "Установка AmneziaWG на SERVER-A"
+    bash /tmp/amnezia-server-install.sh "${INSTALL_FLAGS[@]}"
+    ok "AmneziaWG на SERVER-A готов"
+
     say "Установка AmneziaWG на SERVER-B ($DE_IP)"
-    run_de "bash -s" <<'REMOTE_EOF'
-export DEBIAN_FRONTEND=noninteractive
-systemctl stop unattended-upgrades apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
-systemctl disable unattended-upgrades apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
-apt update -qq
-apt install -y -qq software-properties-common python3-launchpadlib gnupg2 \
-    linux-headers-$(uname -r) build-essential dkms iptables qrencode sqlite3
-if ! command -v awg >/dev/null; then
-    add-apt-repository -y ppa:amnezia/ppa
-    apt update -qq
-    apt install -y -qq amneziawg
-fi
-modprobe amneziawg || true
-echo "amneziawg" > /etc/modules-load.d/amneziawg.conf
-echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-amneziawg.conf
-sysctl --system >/dev/null 2>&1 || true
-echo INSTALLED
-REMOTE_EOF
+    scp_de /tmp/amnezia-server-install.sh /tmp/amnezia-server-install.sh
+    run_de "bash /tmp/amnezia-server-install.sh ${INSTALL_FLAGS[*]}; rm -f /tmp/amnezia-server-install.sh"
     ok "AmneziaWG на SERVER-B готов"
 
     say "Генерация параметров обфускации"
@@ -296,24 +301,30 @@ PY
             [[ $((a + 56)) -ne $b ]] && { echo "$a $b"; return; }
         done
     }
+    # Печатает набор параметров обфускации в формате key=value
+    gen_obf() {
+        local jmin=$((RANDOM % 40 + 10))
+        local s1 s2 h1 h2 h3 h4
+        read s1 s2 <<< "$(gen_s_pair)"
+        read h1 h2 h3 h4 <<< "$(gen_ranges)"
+        cat <<EOF
+HPK=$(awg genkey)
+JC=$((RANDOM % 6 + 3))
+JMIN=$jmin
+JMAX=$((jmin + RANDOM % 40 + 20))
+S1=$s1
+S2=$s2
+S3=$((RANDOM % 50 + 12))
+S4=$((RANDOM % 50 + 12))
+H1=$h1
+H2=$h2
+H3=$h3
+H4=$h4
+EOF
+    }
 
-    HEADER_PROTECTION_KEY=$(awg genkey)
-    Jc=$((RANDOM % 6 + 3))
-    JMIN=$((RANDOM % 40 + 10))
-    JMAX=$((JMIN + RANDOM % 40 + 20))
-    read S1 S2 <<< "$(gen_s_pair)"
-    S3=$((RANDOM % 50 + 12))
-    S4=$((RANDOM % 50 + 12))
-    read H1 H2 H3 H4 <<< "$(gen_ranges)"
-
-    HEADER_PROTECTION_KEY_C=$(awg genkey)
-    Jc_C=$((RANDOM % 6 + 3))
-    JMIN_C=$((RANDOM % 40 + 10))
-    JMAX_C=$((JMIN_C + RANDOM % 40 + 20))
-    read S1_C S2_C <<< "$(gen_s_pair)"
-    S3_C=$((RANDOM % 50 + 12))
-    S4_C=$((RANDOM % 50 + 12))
-    read H1_C H2_C H3_C H4_C <<< "$(gen_ranges)"
+    eval "$(gen_obf)"                 # параметры awg0 (туннель A<->B)
+    eval "$(gen_obf | sed 's/^/C_/')" # параметры awg1 (клиенты), префикс C_
     ok "Параметры сгенерированы"
 
     say "Генерация ключей"
@@ -338,15 +349,53 @@ PY
     [[ -z "$DE_IFACE" ]] && { err "Не удалось определить внешний интерфейс SERVER-B"; exit 1; }
     ok "Внешний интерфейс SERVER-B: $DE_IFACE"
 
+    # --- IPv6-фрагменты конфигов (пустые, если v6 выключен) ---
+    A_V6_ADDR=""; A_V6_POSTUP=""; A_V6_POSTDOWN=""; A_V6_ALLOWED=""
+    B_V6_ADDR=""; B_V6_POSTUP=""; B_V6_POSTDOWN=""; B_V6_ALLOWED=""
+    AWG1_V6_ADDR=""
+    MSS6_RULE_A=""; MSS6_RULE_B=""
+    if [[ $IPV6_ENABLED -eq 1 ]]; then
+        A_V6_ADDR="Address = ${TUNNEL_A_IP6}/128"
+        A_V6_ALLOWED=", ${TUNNEL_B_IP6}/128"
+        A_V6_POSTUP="PostUp = ip -6 route add ${TUNNEL_B_IP6}/128 dev awg0
+PostUp = ip -6 route add default dev awg0 table 100
+PostUp = ip -6 rule add from ${CLIENT_SUBNET6}::/64 lookup 100
+PostUp = ip6tables -A FORWARD -i awg1 -o awg0 -j ACCEPT
+PostUp = ip6tables -A FORWARD -i awg0 -o awg1 -j ACCEPT
+PostUp = ip6tables -t nat -A POSTROUTING -o awg0 -j MASQUERADE
+PostUp = while ip6tables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $MSS_CLAMP 2>/dev/null; do :; done
+PostUp = ip6tables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $MSS_CLAMP"
+        A_V6_POSTDOWN="PostDown = ip -6 rule del from ${CLIENT_SUBNET6}::/64 lookup 100
+PostDown = ip -6 route del default dev awg0 table 100
+PostDown = ip -6 route del ${TUNNEL_B_IP6}/128 dev awg0
+PostDown = ip6tables -D FORWARD -i awg1 -o awg0 -j ACCEPT
+PostDown = ip6tables -D FORWARD -i awg0 -o awg1 -j ACCEPT
+PostDown = ip6tables -t nat -D POSTROUTING -o awg0 -j MASQUERADE
+PostDown = ip6tables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $MSS_CLAMP 2>/dev/null || true"
+        B_V6_ADDR="Address = ${TUNNEL_B_IP6}/128"
+        B_V6_ALLOWED=", ${TUNNEL_A_IP6}/128"
+        B_V6_POSTUP="PostUp = ip6tables -A FORWARD -i awg0 -j ACCEPT
+PostUp = ip6tables -A FORWARD -o awg0 -j ACCEPT
+PostUp = ip6tables -t nat -A POSTROUTING -o $DE_IFACE -j MASQUERADE
+PostUp = while ip6tables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $MSS_CLAMP 2>/dev/null; do :; done
+PostUp = ip6tables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $MSS_CLAMP"
+        B_V6_POSTDOWN="PostDown = ip6tables -D FORWARD -i awg0 -j ACCEPT
+PostDown = ip6tables -D FORWARD -o awg0 -j ACCEPT
+PostDown = ip6tables -t nat -D POSTROUTING -o $DE_IFACE -j MASQUERADE
+PostDown = ip6tables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $MSS_CLAMP 2>/dev/null || true"
+        AWG1_V6_ADDR="Address = ${CLIENT_SUBNET6}::1/64"
+    fi
+
     say "Настройка туннеля awg0"
     cat > "$AWG_DIR/awg0.conf" <<EOF
 [Interface]
 PrivateKey = $RU_PRIV
 Address = $TUNNEL_A_IP/32
+$A_V6_ADDR
 ListenPort = $AWG_TUNNEL_PORT
 MTU = $MTU_AWG0
 Table = off
-Jc = $Jc
+Jc = $JC
 Jmin = $JMIN
 Jmax = $JMAX
 S1 = $S1
@@ -357,7 +406,7 @@ H1 = $H1
 H2 = $H2
 H3 = $H3
 H4 = $H4
-HeaderProtectionKey = $HEADER_PROTECTION_KEY
+HeaderProtectionKey = $HPK
 ContentPaddingAddition = 16
 RekeyAfterTime = 100-120
 RekeyTimeout = 3-7
@@ -374,6 +423,7 @@ PostUp = iptables -A FORWARD -i awg0 -o awg1 -j ACCEPT
 PostUp = iptables -t nat -A POSTROUTING -o awg0 -j MASQUERADE
 PostUp = while iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $MSS_CLAMP 2>/dev/null; do :; done
 PostUp = iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $MSS_CLAMP
+$A_V6_POSTUP
 PostDown = ip rule del from $CLIENT_SUBNET.0/24 lookup 100
 PostDown = ip route del default dev awg0 table 100
 PostDown = ip route del $TUNNEL_B_IP/32 dev awg0
@@ -381,11 +431,12 @@ PostDown = iptables -D FORWARD -i awg1 -o awg0 -j ACCEPT
 PostDown = iptables -D FORWARD -i awg0 -o awg1 -j ACCEPT
 PostDown = iptables -t nat -D POSTROUTING -o awg0 -j MASQUERADE
 PostDown = iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $MSS_CLAMP 2>/dev/null || true
+$A_V6_POSTDOWN
 
 [Peer]
 PublicKey = $DE_PUB
 Endpoint = $DE_IP:$AWG_TUNNEL_PORT
-AllowedIPs = 0.0.0.0/0
+AllowedIPs = 0.0.0.0/0$A_V6_ALLOWED
 PersistentKeepalive = 25
 EOF
     chmod 600 "$AWG_DIR/awg0.conf"
@@ -394,9 +445,10 @@ EOF
 [Interface]
 PrivateKey = $DE_PRIV
 Address = $TUNNEL_B_IP/32
+$B_V6_ADDR
 ListenPort = $AWG_TUNNEL_PORT
 MTU = $MTU_AWG0
-Jc = $Jc
+Jc = $JC
 Jmin = $JMIN
 Jmax = $JMAX
 S1 = $S1
@@ -407,7 +459,7 @@ H1 = $H1
 H2 = $H2
 H3 = $H3
 H4 = $H4
-HeaderProtectionKey = $HEADER_PROTECTION_KEY
+HeaderProtectionKey = $HPK
 ContentPaddingAddition = 16
 RekeyAfterTime = 100-120
 RekeyTimeout = 3-7
@@ -421,14 +473,16 @@ PostUp = iptables -A FORWARD -o awg0 -j ACCEPT
 PostUp = iptables -t nat -A POSTROUTING -o $DE_IFACE -j MASQUERADE
 PostUp = while iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $MSS_CLAMP 2>/dev/null; do :; done
 PostUp = iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $MSS_CLAMP
+$B_V6_POSTUP
 PostDown = iptables -D FORWARD -i awg0 -j ACCEPT
 PostDown = iptables -D FORWARD -o awg0 -j ACCEPT
 PostDown = iptables -t nat -D POSTROUTING -o $DE_IFACE -j MASQUERADE
 PostDown = iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $MSS_CLAMP 2>/dev/null || true
+$B_V6_POSTDOWN
 
 [Peer]
 PublicKey = $RU_PUB
-AllowedIPs = $TUNNEL_A_IP/32
+AllowedIPs = $TUNNEL_A_IP/32$B_V6_ALLOWED
 EOF
 
     scp_de /tmp/awg0-de.conf "$AWG_DIR/awg0.conf"
@@ -443,10 +497,15 @@ EOF
     systemctl restart awg-quick@awg0
     sleep 3
 
-    if ping -c 3 -W 3 "$TUNNEL_B_IP" >/dev/null 2>&1; then
+    TUN_OK=1
+    ping -c 3 -W 3 "$TUNNEL_B_IP" >/dev/null 2>&1 || TUN_OK=0
+    if [[ $IPV6_ENABLED -eq 1 ]]; then
+        ping -6 -c 3 -W 3 "$TUNNEL_B_IP6" >/dev/null 2>&1 || TUN_OK=0
+    fi
+    if [[ $TUN_OK -eq 1 ]]; then
         ok "Туннель awg0 работает"
     else
-        err "Пинг до $TUNNEL_B_IP не идёт"
+        err "Пинг до SERVER-B через туннель не идёт"
         exit 1
     fi
 
@@ -464,20 +523,21 @@ EOF
 [Interface]
 PrivateKey = $AWG1_PRIV
 Address = $CLIENT_SERVER_IP/24
+$AWG1_V6_ADDR
 ListenPort = $AWG_CLIENT_PORT
 MTU = $MTU_AWG1
-Jc = $Jc_C
-Jmin = $JMIN_C
-Jmax = $JMAX_C
-S1 = $S1_C
-S2 = $S2_C
-S3 = $S3_C
-S4 = $S4_C
-H1 = $H1_C
-H2 = $H2_C
-H3 = $H3_C
-H4 = $H4_C
-HeaderProtectionKey = $HEADER_PROTECTION_KEY_C
+Jc = $C_JC
+Jmin = $C_JMIN
+Jmax = $C_JMAX
+S1 = $C_S1
+S2 = $C_S2
+S3 = $C_S3
+S4 = $C_S4
+H1 = $C_H1
+H2 = $C_H2
+H3 = $C_H3
+H4 = $C_H4
+HeaderProtectionKey = $C_HPK
 ContentPaddingAddition = 16
 RekeyAfterTime = 100-120
 RekeyTimeout = 3-7
@@ -493,6 +553,14 @@ EOF
     systemctl restart awg-quick@awg1
     sleep 2
     ok "awg1 поднят"
+else
+    # --- Режим обновления: константы и AmneziaWG уже на месте ---
+    [[ ! -f "$CASCADE_ENV" ]] && write_cascade_env
+    [[ "${IPV6_ENABLED:-0}" == "1" ]] && INSTALL_FLAGS+=(--ipv6)
+
+    say "Обновление базовых пакетов AmneziaWG на SERVER-A"
+    bash /tmp/amnezia-server-install.sh "${INSTALL_FLAGS[@]}"
+    ok "Базовые пакеты обновлены"
 fi
 
 # =====================================================================
@@ -504,21 +572,31 @@ mkdir -p /usr/local/bin
 
 for script in "${SCRIPTS_TO_DOWNLOAD[@]}"; do
     if [[ -f "/tmp/$script" ]]; then
-        sed -e "s|__SERVER_ENDPOINT__|$RU_IP:$AWG_CLIENT_PORT|g" \
-            -e "s|__SERVER_NAME__|$SERVER_NAME|g" \
+        sed -e "s|__SERVER_ENDPOINT__|$(sed_escape "$RU_IP:$AWG_CLIENT_PORT")|g" \
+            -e "s|__SERVER_NAME__|$(sed_escape "$SERVER_NAME")|g" \
             -e "s|__CLIENT_MTU__|$CLIENT_MTU|g" \
-            -e "s|__DNS_SERVERS__|$CLIENT_DNS|g" \
+            -e "s|__DNS_SERVERS__|$(sed_escape "$CLIENT_DNS")|g" \
             "/tmp/$script" > "/usr/local/bin/$script"
         chmod +x "/usr/local/bin/$script"
     fi
 done
 ok "Скрипты установлены в /usr/local/bin/"
 
-say "Настройка cron"
-apt install -y -qq sqlite3 >/dev/null 2>&1 || true
+say "Настройка cron и ротации логов"
 mkdir -p /var/lib/amnezia-panel
 [[ -f /var/lib/amnezia-panel/traffic_enabled ]] || echo "1" > /var/lib/amnezia-panel/traffic_enabled
-rm -f /usr/local/bin/amnezia-traffic-collector.sh
+rm -f /usr/local/bin/amnezia-traffic-collector.sh  # очистка от старой версии
+
+cat > /etc/logrotate.d/amnezia <<'EOF'
+/var/log/amnezia-*.log {
+    weekly
+    rotate 8
+    compress
+    missingok
+    notifempty
+    copytruncate
+}
+EOF
 
 if [[ -x /usr/local/bin/amnezia-healthcheck.sh ]]; then
     cat > /etc/cron.d/amnezia-healthcheck <<'EOF'
@@ -552,8 +630,6 @@ if [[ "$INSTALL_PANEL" =~ ^[yYдД] ]]; then
     say "Установка веб-панели"
 
     if [[ $UPDATE_MODE -eq 1 && -f /etc/amnezia-panel.conf ]]; then
-        PANEL_USER=$(awk -F'=' '/^username/ {print $2}' /etc/amnezia-panel.conf || echo admin)
-        PANEL_PASS=$(awk -F'=' '/^password/ {print $2}' /etc/amnezia-panel.conf || echo "")
         AUTH_CHOICE="keep"
         ok "Учётные данные панели сохраняются"
     else
@@ -579,36 +655,57 @@ if [[ "$INSTALL_PANEL" =~ ^[yYдД] ]]; then
                 ;;
             *)
                 PANEL_USER="admin"
-                PANEL_PASS=$(openssl rand -base64 24 | tr -d '/+=' | head -c 24)
+                PANEL_PASS=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 24)
                 ;;
         esac
     fi
 
     echo "  ↓ Скачивание файлов веб-панели"
-    PANEL_DL_OK=0
-    for mirror in "${MIRRORS[@]}"; do
-        if curl -fsSL --connect-timeout 5 --max-time 15 "$mirror/web-panel/amnezia-panel.py" -o /tmp/amnezia-panel.py && \
-           curl -fsSL --connect-timeout 5 --max-time 15 "$mirror/web-panel/amnezia-panel.service" -o /tmp/amnezia-panel.service; then
-            PANEL_DL_OK=1
-            break
-        fi
-    done
-    [[ $PANEL_DL_OK -eq 0 ]] && { err "Не удалось скачать файлы панели"; exit 1; }
+    download_url "web-panel/amnezia-panel.py" /tmp/amnezia-panel.py
+    download_url "web-panel/amnezia-panel.service" /tmp/amnezia-panel.service
+    [[ -f /tmp/amnezia-panel.py && -f /tmp/amnezia-panel.service ]] || { err "Не удалось скачать файлы панели"; exit 1; }
 
     apt install -y -qq python3-venv
     python3 -m venv /opt/amnezia-panel-venv
     /opt/amnezia-panel-venv/bin/pip install --quiet --upgrade pip
     /opt/amnezia-panel-venv/bin/pip install --quiet fastapi 'uvicorn[standard]' python-multipart
 
-    sed "s|__SERVER_LABEL__|$SERVER_NAME|g" /tmp/amnezia-panel.py > /opt/amnezia-panel.py
+    sed "s|__SERVER_LABEL__|$(sed_escape "$SERVER_NAME")|g" /tmp/amnezia-panel.py > /opt/amnezia-panel.py
     chmod 700 /opt/amnezia-panel.py
 
     if [[ "$AUTH_CHOICE" != "keep" ]]; then
+        # Пароль хранится только в виде хэша с солью
+        PANEL_SALT=$(openssl rand -hex 16)
+        PANEL_HASH=$(printf '%s' "${PANEL_SALT}${PANEL_PASS}" | sha256sum | awk '{print $1}')
         cat > /etc/amnezia-panel.conf <<EOF
 username=$PANEL_USER
-password=$PANEL_PASS
+password_hash=sha256:$PANEL_SALT:$PANEL_HASH
 EOF
         chmod 600 /etc/amnezia-panel.conf
+    fi
+
+    # Fail2Ban-защита формы логина панели (если fail2ban установлен)
+    if command -v fail2ban-client >/dev/null 2>&1; then
+        cat > /etc/fail2ban/filter.d/amnezia-panel.conf <<'EOF'
+[Definition]
+failregex = ^.*Failed login attempt from <IP>.*$
+ignoreregex =
+EOF
+        if ! grep -q '^\[amnezia-panel\]' /etc/fail2ban/jail.local 2>/dev/null; then
+            cat >> /etc/fail2ban/jail.local <<'EOF'
+
+[amnezia-panel]
+enabled = true
+port = 80,443,8000
+filter = amnezia-panel
+logpath = /var/log/amnezia-panel-auth.log
+maxretry = 5
+bantime = 3600
+findtime = 600
+EOF
+        fi
+        systemctl restart fail2ban
+        ok "Fail2Ban защищает и форму логина панели"
     fi
 
     mkdir -p /etc/amnezia-panel-ssl
@@ -628,10 +725,9 @@ EOF
     rm -f /tmp/amnezia-panel.py /tmp/amnezia-panel.service
 
     echo "  ↓ Сохранение текущей версии репозитория"
-    LATEST_SHA=$(curl -s "https://api.github.com/repos/daff4ik/amneziawg-cascade/commits/main" | grep -oP '"sha":\s*"\K[^"]+' | head -1 || true)
-    if [[ -n "$LATEST_SHA" ]]; then
-        echo "$LATEST_SHA" > /var/lib/amnezia-panel/installed_commit
-    fi
+    LATEST_SHA=$(curl -s "https://api.github.com/repos/daff4ik/amneziawg-cascade/commits/main" \
+        | python3 -c "import sys,json; print(json.load(sys.stdin).get('sha',''))" 2>/dev/null || true)
+    [[ -n "$LATEST_SHA" ]] && echo "$LATEST_SHA" > /var/lib/amnezia-panel/installed_commit
 fi
 
 # =====================================================================
@@ -639,69 +735,13 @@ fi
 # =====================================================================
 if [[ $UPDATE_MODE -eq 1 && "${SETUP_STEALTH:-n}" =~ ^[yYдД] ]]; then
     say "Настройка Stealth-режима (Сайт-заглушка)"
-    
-    if [[ ! -f "/var/www/stealth/index.html" ]]; then
-        warn "В папке /var/www/stealth нет ваших файлов (index.html)!"
-        echo "Создаю пустую базовую страницу. Замените её на свой сайт позже!"
-        mkdir -p /var/www/stealth
-        cat > /var/www/stealth/index.html <<EOF
-<!DOCTYPE html><html><head><title>Under Construction</title></head>
-<body style="text-align:center; padding: 50px; font-family: sans-serif;">
-<h1>Site is under construction</h1><p>Please check back later.</p>
-</body></html>
-EOF
-    fi
-
-    read -p "Введите ваш домен (например, mysite.com): " DOMAIN
-    [[ -z "$DOMAIN" ]] && { err "Домен обязателен"; exit 1; }
-
-    read -p "Секретный путь для панели (например, 'myadmin'): " SECRET_PATH
-    [[ -z "$SECRET_PATH" ]] && { err "Путь обязателен"; exit 1; }
-
-    apt install -y -qq nginx certbot python3-certbot-nginx
-
-    cat > /etc/nginx/sites-available/amnezia-stealth <<EOF
-server {
-    listen 80;
-    server_name $DOMAIN;
-
-    root /var/www/stealth;
-    index index.html index.htm;
-
-    location / {
-        try_files \$uri \$uri/ =404;
-    }
-
-    location /$SECRET_PATH/ {
-        proxy_pass http://127.0.0.1:8000/;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-}
-EOF
-    ln -sf /etc/nginx/sites-available/amnezia-stealth /etc/nginx/sites-enabled/
-    rm -f /etc/nginx/sites-enabled/default
-    systemctl restart nginx
-
-    echo "Получение SSL сертификата для $DOMAIN..."
-    if certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos -m "admin@$DOMAIN" --redirect; then
-        ok "SSL сертификат получен успешно!"
+    download_url "stealth-setup.sh" /tmp/stealth-setup.sh
+    if [[ -f /tmp/stealth-setup.sh ]]; then
+        bash /tmp/stealth-setup.sh
+        rm -f /tmp/stealth-setup.sh
     else
-        warn "Не удалось получить SSL. Убедитесь, что DNS обновились."
-        warn "Сайт и панель пока будут доступны по HTTP (порт 80)."
-    fi
-
-    # Прячем панель на локалхост
-    if [[ -f /etc/amnezia-panel.conf ]]; then
-        sed -i '/^host=/d' /etc/amnezia-panel.conf
-        sed -i '/^base_url=/d' /etc/amnezia-panel.conf
-        sed -i '/^ssl=/d' /etc/amnezia-panel.conf
-        echo "host=127.0.0.1" >> /etc/amnezia-panel.conf
-        echo "base_url=/$SECRET_PATH" >> /etc/amnezia-panel.conf
-        echo "ssl=false" >> /etc/amnezia-panel.conf
-        systemctl restart amnezia-panel
+        err "Не удалось скачать stealth-setup.sh"
+        exit 1
     fi
 fi
 
@@ -722,22 +762,21 @@ else
   Туннель awg0:    порт $AWG_TUNNEL_PORT/udp
   Клиенты awg1:    порт $AWG_CLIENT_PORT/udp
   Подсеть:         $CLIENT_SUBNET.0/24
+  IPv6:            $([[ $IPV6_ENABLED -eq 1 ]] && echo "включён ($CLIENT_SUBNET6::/64)" || echo "выключен")
+  Fail2Ban:        $([[ "$INSTALL_F2B" =~ ^[yYдД] ]] && echo "на обоих серверах" || echo "не установлен")
 EOM
 fi
 
 if [[ "$INSTALL_PANEL" =~ ^[yYдД] ]]; then
-    # --- БРОНЕБОЙНЫЙ ПАРСИНГ STEALTH-РЕЖИМА ---
     P_CONF="/etc/amnezia-panel.conf"
     P_HOST=$(awk -F'=' '/^host/ {print $2}' "$P_CONF" 2>/dev/null | tr -d ' \r\n')
     [[ -z "$P_HOST" ]] && P_HOST="0.0.0.0"
     P_BASE=$(awk -F'=' '/^base_url/ {print $2}' "$P_CONF" 2>/dev/null | tr -d ' \r\n')
-    
+
+    # Данные stealth-режима читаем из сохранённого файла (пишет stealth-setup.sh)
     P_DOMAIN=""
-    if [[ "$P_HOST" == "127.0.0.1" ]] && command -v nginx >/dev/null 2>&1; then
-        NGINX_CONF=$(grep -l "127.0.0.1:8000" /etc/nginx/sites-enabled/* 2>/dev/null | head -n 1 || true)
-        if [[ -n "$NGINX_CONF" && -f "$NGINX_CONF" ]]; then
-            P_DOMAIN=$(awk '/server_name/ {print $2}' "$NGINX_CONF" 2>/dev/null | head -n 1 | tr -d '; \r\n')
-        fi
+    if [[ -f /etc/amnezia-stealth.conf ]]; then
+        P_DOMAIN=$(awk -F'=' '/^domain/ {print $2}' /etc/amnezia-stealth.conf 2>/dev/null | tr -d ' \r\n')
     fi
 
     echo "=============================================="
@@ -752,7 +791,7 @@ if [[ "$INSTALL_PANEL" =~ ^[yYдД] ]]; then
     if [[ -n "${PANEL_PASS:-}" ]]; then
         echo "Логин:                $PANEL_USER"
         echo "Пароль:               $PANEL_PASS"
-        echo "(СОХРАНИТЕ ПАРОЛЬ! Больше он показан не будет)"
+        echo "(СОХРАНИТЕ ПАРОЛЬ! На сервере хранится только его хэш)"
     fi
     echo "=============================================="
 

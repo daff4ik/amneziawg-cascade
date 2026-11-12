@@ -52,7 +52,7 @@ fi
 CLIENT_SAFE=$(echo "$CLIENT_NAME" | sed 's/[^a-zA-Z0-9_-]//g')
 [[ -z "$CLIENT_SAFE" ]] && { echo "Ошибка: некорректное имя клиента"; exit 1; }
 
-if ! grep -q "# Client: $CLIENT_SAFE" "$SERVER_CONF"; then
+if ! grep -qxF "# Client: $CLIENT_SAFE" "$SERVER_CONF"; then
     echo "Ошибка: клиент '$CLIENT_SAFE' не найден в $SERVER_CONF"
     exit 1
 fi
